@@ -10,33 +10,70 @@ local Lighting          = game:GetService("Lighting")
 local RunService        = game:GetService("RunService")
 local Workspace         = game:GetService("Workspace")
 local CollectionService = game:GetService("CollectionService")
+local TweenService      = game:GetService("TweenService")
+local HttpService       = game:GetService("HttpService")
 
 local LocalPlayer = Players.LocalPlayer
 
 if _G.brieliVisUnload then pcall(_G.brieliVisUnload) end
 
--- ============== СОСТОЯНИЕ ==============
+-- ============== ФАЙЛОВЫЕ ОПЕРАЦИИ ==============
+local CONFIG_FILE = "brieli_vis_config.json"
+
+local function fsWrite(name, content)
+    if writefile then pcall(writefile, name, content)
+    elseif write_file then pcall(write_file, name, content) end
+end
+
+local function fsRead(name)
+    if isfile then
+        local ok, exists = pcall(isfile, name)
+        if ok and exists then
+            local ok2, data = pcall(readfile, name)
+            if ok2 then return data end
+        end
+    elseif read_file then
+        local ok, data = pcall(read_file, name)
+        if ok and data then return data end
+    end
+    return nil
+end
+
+local function fsDelete(name)
+    if delfile then pcall(delfile, name)
+    elseif del_file then pcall(del_file, name) end
+end
+
+-- ============== СОСТОЯНИЕ (всё выключено по умолчанию) ==============
 local state = {
-    espEnabled      = true,
-    showName        = true,
-    showDistance    = true,
-    showHealthBar   = true,
-    showKillerTag   = true,
-    chams           = true,
+    espEnabled      = false,
+    showName        = false,
+    showDistance    = false,
+    showHealthBar   = false,
+    showKillerTag   = false,
+    chams           = false,
     box2D           = false,
     skeleton        = false,
-    espGenerators   = true,
-    espHooks        = true,
-    espPallets      = true,
+    espGenerators   = false,
+    espHooks        = false,
+    espPallets      = false,
     noclip          = false,
     fullbright      = false,
     noFog           = false,
     noShadows       = false,
     fovValue        = 90,
-    killerAlert     = true,
-    menuTheme       = "blue",
+    killerAlert     = false,
     menuKey         = Enum.KeyCode.RightShift,
-    checkpointBinds = true,
+    checkpointBinds = false,
+
+    -- Aimbot
+    aimbotEnabled   = false,
+    aimbotShowFov   = false,
+    aimbotFovSize   = 120,
+
+    -- Avoid killer
+    avoidKiller          = false,
+    avoidKillerDistance  = 40,
 
     currentEffects  = {},
     effectTrail     = false,
@@ -59,12 +96,19 @@ local state = {
     hookColor       = Color3.fromRGB(255, 0, 255),
     palletColor     = Color3.fromRGB(0, 255, 100),
 
+    configAccent          = nil,
+    configBgImage         = "",
+    configBgImageEnabled  = false,
+    configBgImageTransparency = 0.55,
+
     highlights      = {},
     billboards      = {},
     boxes2D         = {},
     skeletons       = {},
     connections     = {},
     renderConn      = nil,
+    aimConn         = nil,
+    avoidConn       = nil,
     noclipConn      = nil,
     savedCollide    = {},
     roleCache       = {},
@@ -72,11 +116,116 @@ local state = {
     checkpointMarker = nil,
     unloaded        = false,
     currentTab      = "visuals",
+    tabSwitching    = false,
+    loadingConfig   = false,
 }
 
 local function bind(conn)
     table.insert(state.connections, conn)
     return conn
+end
+
+-- ============== ПАЛИТРА ==============
+local C = {
+    bg        = Color3.fromRGB(13, 16, 21),
+    topbar    = Color3.fromRGB(17, 21, 27),
+    sidebar   = Color3.fromRGB(17, 21, 27),
+    panelBg   = Color3.fromRGB(20, 25, 31),
+    panelHdr  = Color3.fromRGB(24, 29, 37),
+    row       = Color3.fromRGB(21, 26, 33),
+    rowHover  = Color3.fromRGB(28, 34, 43),
+    tabActive = Color3.fromRGB(24, 40, 54),
+    tabHover  = Color3.fromRGB(22, 28, 36),
+    accent    = Color3.fromRGB(0, 200, 255),
+    accentDim = Color3.fromRGB(0, 130, 170),
+    text      = Color3.fromRGB(220, 228, 240),
+    textDim   = Color3.fromRGB(115, 128, 145),
+    textMute  = Color3.fromRGB(80, 92, 105),
+    track     = Color3.fromRGB(38, 46, 58),
+    border    = Color3.fromRGB(28, 34, 43),
+}
+
+local function colorToTable(c)
+    return {
+        R = math.floor(c.R * 255 + 0.5),
+        G = math.floor(c.G * 255 + 0.5),
+        B = math.floor(c.B * 255 + 0.5),
+    }
+end
+
+local function colorFromTable(t)
+    if not t or type(t) ~= "table" then return nil end
+    return Color3.fromRGB(t.R or 255, t.G or 255, t.B or 255)
+end
+
+-- ============== КОНФИГ ==============
+local function buildConfig()
+    local kb = {}
+    for label, data in pairs(keybindRegistry) do
+        if data and data.key then
+            kb[label] = data.key.Name
+        end
+    end
+    return {
+        espEnabled = state.espEnabled,
+        showName = state.showName,
+        showDistance = state.showDistance,
+        showHealthBar = state.showHealthBar,
+        showKillerTag = state.showKillerTag,
+        chams = state.chams,
+        box2D = state.box2D,
+        skeleton = state.skeleton,
+        espGenerators = state.espGenerators,
+        espHooks = state.espHooks,
+        espPallets = state.espPallets,
+        fullbright = state.fullbright,
+        noFog = state.noFog,
+        noShadows = state.noShadows,
+        fovValue = state.fovValue,
+        killerAlert = state.killerAlert,
+        checkpointBinds = state.checkpointBinds,
+        spinSpeed = state.spinSpeed,
+        spinDirection = state.spinDirection,
+        autoEscape = state.autoEscape,
+        menuKeyName = state.menuKey and state.menuKey.Name or "RightShift",
+
+        aimbotEnabled = state.aimbotEnabled,
+        aimbotShowFov = state.aimbotShowFov,
+        aimbotFovSize = state.aimbotFovSize,
+
+        avoidKiller = state.avoidKiller,
+        avoidKillerDistance = state.avoidKillerDistance,
+
+        survivorColor = colorToTable(state.survivorColor),
+        killerColor = colorToTable(state.killerColor),
+        generatorColor = colorToTable(state.generatorColor),
+        hookColor = colorToTable(state.hookColor),
+        palletColor = colorToTable(state.palletColor),
+
+        configAccent = state.configAccent and colorToTable(state.configAccent) or nil,
+        configBgImage = state.configBgImage,
+        configBgImageEnabled = state.configBgImageEnabled,
+        configBgImageTransparency = state.configBgImageTransparency,
+
+        keybinds = kb,
+    }
+end
+
+local function saveConfig()
+    local ok, encoded = pcall(function()
+        return HttpService:JSONEncode(buildConfig())
+    end)
+    if ok and encoded then fsWrite(CONFIG_FILE, encoded) end
+end
+
+local function loadConfigTable()
+    local data = fsRead(CONFIG_FILE)
+    if not data or data == "" then return nil end
+    local ok, decoded = pcall(function()
+        return HttpService:JSONDecode(data)
+    end)
+    if ok then return decoded end
+    return nil
 end
 
 -- ============== GUI ==============
@@ -88,37 +237,24 @@ if not parentGui then
     parentGui = LocalPlayer:WaitForChild("PlayerGui")
 end
 
-local THEMES = {
-    blue   = { name="Тёмно-синий", bg=Color3.fromRGB(18,18,24), titleBg=Color3.fromRGB(28,28,38),
-        tabBg=Color3.fromRGB(35,35,48), tabAct=Color3.fromRGB(80,80,130), tabHov=Color3.fromRGB(55,55,80),
-        row=Color3.fromRGB(32,32,42), rowHov=Color3.fromRGB(42,42,55), accent=Color3.fromRGB(100,140,255),
-        stroke=Color3.fromRGB(70,70,100) },
-    purple = { name="Тёмно-фиолетовый", bg=Color3.fromRGB(22,18,30), titleBg=Color3.fromRGB(35,28,45),
-        tabBg=Color3.fromRGB(45,35,60), tabAct=Color3.fromRGB(110,80,155), tabHov=Color3.fromRGB(65,50,85),
-        row=Color3.fromRGB(40,32,52), rowHov=Color3.fromRGB(52,42,68), accent=Color3.fromRGB(170,110,255),
-        stroke=Color3.fromRGB(90,70,120) },
-    green  = { name="Тёмно-зелёный", bg=Color3.fromRGB(18,24,20), titleBg=Color3.fromRGB(28,38,30),
-        tabBg=Color3.fromRGB(35,48,40), tabAct=Color3.fromRGB(80,130,100), tabHov=Color3.fromRGB(55,78,65),
-        row=Color3.fromRGB(30,42,35), rowHov=Color3.fromRGB(42,58,48), accent=Color3.fromRGB(90,210,130),
-        stroke=Color3.fromRGB(70,100,85) },
-    red    = { name="Тёмно-красный", bg=Color3.fromRGB(24,18,18), titleBg=Color3.fromRGB(40,25,25),
-        tabBg=Color3.fromRGB(50,32,32), tabAct=Color3.fromRGB(140,65,65), tabHov=Color3.fromRGB(80,50,50),
-        row=Color3.fromRGB(44,28,28), rowHov=Color3.fromRGB(60,40,40), accent=Color3.fromRGB(230,90,90),
-        stroke=Color3.fromRGB(110,70,70) },
-    black  = { name="Чёрный", bg=Color3.fromRGB(8,8,10), titleBg=Color3.fromRGB(18,18,20),
-        tabBg=Color3.fromRGB(25,25,28), tabAct=Color3.fromRGB(70,70,80), tabHov=Color3.fromRGB(40,40,48),
-        row=Color3.fromRGB(20,20,24), rowHov=Color3.fromRGB(32,32,38), accent=Color3.fromRGB(210,210,220),
-        stroke=Color3.fromRGB(60,60,70) },
-}
-
-local function getTheme() return THEMES[state.menuTheme] or THEMES.blue end
-local THEME = getTheme()
-
 local function round(obj, r)
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(0, r or 6)
     c.Parent = obj
     return c
+end
+
+local function attachHoverScale(btn, targetScale)
+    targetScale = targetScale or 1.02
+    local scale = Instance.new("UIScale")
+    scale.Scale = 1
+    scale.Parent = btn
+    btn.MouseEnter:Connect(function()
+        TweenService:Create(scale, TweenInfo.new(0.12, Enum.EasingStyle.Quad), {Scale = targetScale}):Play()
+    end)
+    btn.MouseLeave:Connect(function()
+        TweenService:Create(scale, TweenInfo.new(0.12, Enum.EasingStyle.Quad), {Scale = 1}):Play()
+    end)
 end
 
 local screenGui = Instance.new("ScreenGui")
@@ -130,139 +266,418 @@ screenGui.DisplayOrder = 999
 screenGui.Parent = parentGui
 
 local main = Instance.new("Frame")
-main.Size = UDim2.new(0, 500, 0, 650)
-main.Position = UDim2.new(0.5, -250, 0.5, -325)
-main.BackgroundColor3 = THEME.bg
+main.Size = UDim2.new(0, 820, 0, 540)
+main.Position = UDim2.new(0.5, -410, 0.5, -270)
+main.BackgroundColor3 = C.bg
 main.BorderSizePixel = 0
 main.Active = true
 main.Draggable = true
 main.Parent = screenGui
-main:SetAttribute("TR", "bg")
-round(main, 12)
+round(main, 8)
 
 local mainStroke = Instance.new("UIStroke")
-mainStroke.Color = THEME.stroke
-mainStroke.Thickness = 1.5
+mainStroke.Color = C.border
+mainStroke.Thickness = 1
 mainStroke.Parent = main
-mainStroke:SetAttribute("TR", "stroke")
 
-local titleBar = Instance.new("Frame")
-titleBar.Size = UDim2.new(1, 0, 0, 38)
-titleBar.BackgroundColor3 = THEME.titleBg
-titleBar.BorderSizePixel = 0
-titleBar.Parent = main
-titleBar:SetAttribute("TR", "titleBg")
-round(titleBar, 12)
+local topbar = Instance.new("Frame")
+topbar.Size = UDim2.new(1, 0, 0, 42)
+topbar.BackgroundColor3 = C.topbar
+topbar.BorderSizePixel = 0
+topbar.Parent = main
+round(topbar, 8)
 
-local titleCover = Instance.new("Frame")
-titleCover.Size = UDim2.new(1, 0, 0, 12)
-titleCover.Position = UDim2.new(0, 0, 1, -12)
-titleCover.BackgroundColor3 = THEME.titleBg
-titleCover.BorderSizePixel = 0
-titleCover.Parent = titleBar
-titleCover:SetAttribute("TR", "titleBg")
+local topbarCover = Instance.new("Frame")
+topbarCover.Size = UDim2.new(1, 0, 0, 12)
+topbarCover.Position = UDim2.new(0, 0, 1, -12)
+topbarCover.BackgroundColor3 = C.topbar
+topbarCover.BorderSizePixel = 0
+topbarCover.Parent = topbar
 
-local titleDot = Instance.new("Frame")
-titleDot.Size = UDim2.new(0, 8, 0, 8)
-titleDot.Position = UDim2.new(0, 14, 0.5, -4)
-titleDot.BackgroundColor3 = THEME.accent
-titleDot.BorderSizePixel = 0
-titleDot.Parent = titleBar
-titleDot:SetAttribute("TR", "accentBg")
-round(titleDot, 4)
+local logoDot = Instance.new("Frame")
+logoDot.Size = UDim2.new(0, 8, 0, 8)
+logoDot.Position = UDim2.new(0, 18, 0.5, -4)
+logoDot.BackgroundColor3 = C.accent
+logoDot.BorderSizePixel = 0
+logoDot.Parent = topbar
+round(logoDot, 4)
 
 local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(1, -30, 1, 0)
-titleLabel.Position = UDim2.new(0, 30, 0, 0)
+titleLabel.Size = UDim2.new(0, 300, 1, 0)
+titleLabel.Position = UDim2.new(0, 36, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "brieli vis  •  Violence District"
-titleLabel.TextColor3 = Color3.fromRGB(230, 230, 245)
+titleLabel.Text = "brieli vis"
+titleLabel.TextColor3 = C.text
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 titleLabel.Font = Enum.Font.GothamBold
 titleLabel.TextSize = 15
-titleLabel.Parent = titleBar
+titleLabel.Parent = topbar
 
-local tabBar = Instance.new("Frame")
-tabBar.Size = UDim2.new(1, -20, 0, 34)
-tabBar.Position = UDim2.new(0, 10, 0, 46)
-tabBar.BackgroundTransparency = 1
-tabBar.Parent = main
+local titleSub = Instance.new("TextLabel")
+titleSub.Size = UDim2.new(0, 300, 1, 0)
+titleSub.Position = UDim2.new(0, 118, 0, 0)
+titleSub.BackgroundTransparency = 1
+titleSub.Text = "· Violence District"
+titleSub.TextColor3 = C.textMute
+titleSub.TextXAlignment = Enum.TextXAlignment.Left
+titleSub.Font = Enum.Font.Gotham
+titleSub.TextSize = 12
+titleSub.Parent = topbar
 
-local tabLayout = Instance.new("UIListLayout")
-tabLayout.FillDirection = Enum.FillDirection.Horizontal
-tabLayout.Padding = UDim.new(0, 3)
-tabLayout.Parent = tabBar
+local topbarSep = Instance.new("Frame")
+topbarSep.Size = UDim2.new(1, 0, 0, 1)
+topbarSep.Position = UDim2.new(0, 0, 0, 42)
+topbarSep.BackgroundColor3 = C.border
+topbarSep.BorderSizePixel = 0
+topbarSep.Parent = main
 
+-- ============== SIDEBAR ==============
+local sidebar = Instance.new("Frame")
+sidebar.Size = UDim2.new(0, 172, 1, -43)
+sidebar.Position = UDim2.new(0, 0, 0, 43)
+sidebar.BackgroundColor3 = C.sidebar
+sidebar.BorderSizePixel = 0
+sidebar.Parent = main
+
+local sidebarSep = Instance.new("Frame")
+sidebarSep.Size = UDim2.new(0, 1, 1, 0)
+sidebarSep.Position = UDim2.new(1, -1, 0, 0)
+sidebarSep.BackgroundColor3 = C.border
+sidebarSep.BorderSizePixel = 0
+sidebarSep.Parent = sidebar
+
+local sidebarList = Instance.new("Frame")
+sidebarList.Size = UDim2.new(1, 0, 1, -60)
+sidebarList.BackgroundTransparency = 1
+sidebarList.Parent = sidebar
+
+local sidebarLayout = Instance.new("UIListLayout")
+sidebarLayout.Padding = UDim.new(0, 2)
+sidebarLayout.SortOrder = Enum.SortOrder.LayoutOrder
+sidebarLayout.Parent = sidebarList
+
+local sidebarPad = Instance.new("UIPadding")
+sidebarPad.PaddingTop = UDim.new(0, 12)
+sidebarPad.PaddingLeft = UDim.new(0, 8)
+sidebarPad.PaddingRight = UDim.new(0, 8)
+sidebarPad.Parent = sidebarList
+
+local userPanel = Instance.new("Frame")
+userPanel.Size = UDim2.new(1, -16, 0, 44)
+userPanel.Position = UDim2.new(0, 8, 1, -52)
+userPanel.BackgroundColor3 = C.panelBg
+userPanel.BorderSizePixel = 0
+userPanel.Parent = sidebar
+round(userPanel, 6)
+
+local userDot = Instance.new("Frame")
+userDot.Size = UDim2.new(0, 26, 0, 26)
+userDot.Position = UDim2.new(0, 9, 0.5, -13)
+userDot.BackgroundColor3 = C.accentDim
+userDot.BorderSizePixel = 0
+userDot.Parent = userPanel
+round(userDot, 13)
+
+local userInitial = Instance.new("TextLabel")
+userInitial.Size = UDim2.new(1, 0, 1, 0)
+userInitial.BackgroundTransparency = 1
+userInitial.Text = string.sub(LocalPlayer.Name, 1, 1):upper()
+userInitial.TextColor3 = Color3.fromRGB(255, 255, 255)
+userInitial.Font = Enum.Font.GothamBold
+userInitial.TextSize = 13
+userInitial.Parent = userDot
+
+local userName = Instance.new("TextLabel")
+userName.Size = UDim2.new(1, -48, 0, 16)
+userName.Position = UDim2.new(0, 42, 0, 7)
+userName.BackgroundTransparency = 1
+userName.Text = LocalPlayer.Name
+userName.TextColor3 = C.text
+userName.TextXAlignment = Enum.TextXAlignment.Left
+userName.Font = Enum.Font.GothamMedium
+userName.TextSize = 12
+userName.TextTruncate = Enum.TextTruncate.AtEnd
+userName.Parent = userPanel
+
+local userTime = Instance.new("TextLabel")
+userTime.Size = UDim2.new(1, -48, 0, 14)
+userTime.Position = UDim2.new(0, 42, 0, 23)
+userTime.BackgroundTransparency = 1
+userTime.Text = os.date("%H:%M:%S")
+userTime.TextColor3 = C.textDim
+userTime.TextXAlignment = Enum.TextXAlignment.Left
+userTime.Font = Enum.Font.Gotham
+userTime.TextSize = 10
+userTime.Parent = userPanel
+
+task.spawn(function()
+    while not state.unloaded do
+        userTime.Text = os.date("%H:%M:%S")
+        task.wait(1)
+    end
+end)
+
+-- ============== CONTENT ==============
 local content = Instance.new("Frame")
-content.Size = UDim2.new(1, -20, 1, -170)
-content.Position = UDim2.new(0, 10, 0, 86)
-content.BackgroundTransparency = 1
+content.Size = UDim2.new(1, -173, 1, -43)
+content.Position = UDim2.new(0, 173, 0, 43)
+content.BackgroundColor3 = C.bg
+content.BorderSizePixel = 0
 content.Parent = main
+
+local bgImage = Instance.new("ImageLabel")
+bgImage.Name = "BackgroundImage"
+bgImage.Size = UDim2.new(1, 0, 1, 0)
+bgImage.BackgroundTransparency = 1
+bgImage.Image = ""
+bgImage.ImageTransparency = state.configBgImageTransparency
+bgImage.ScaleType = Enum.ScaleType.Crop
+bgImage.ZIndex = 0
+bgImage.Visible = false
+bgImage.Parent = content
+
+local tabHeader = Instance.new("Frame")
+tabHeader.Size = UDim2.new(1, 0, 0, 38)
+tabHeader.BackgroundColor3 = C.bg
+tabHeader.BorderSizePixel = 0
+tabHeader.ZIndex = 2
+tabHeader.Parent = content
+
+local tabHeaderSep = Instance.new("Frame")
+tabHeaderSep.Size = UDim2.new(1, 0, 0, 1)
+tabHeaderSep.Position = UDim2.new(0, 0, 1, -1)
+tabHeaderSep.BackgroundColor3 = C.border
+tabHeaderSep.BorderSizePixel = 0
+tabHeaderSep.Parent = tabHeader
+
+local tabHeaderLabel = Instance.new("TextLabel")
+tabHeaderLabel.Size = UDim2.new(1, -24, 1, 0)
+tabHeaderLabel.Position = UDim2.new(0, 20, 0, 0)
+tabHeaderLabel.BackgroundTransparency = 1
+tabHeaderLabel.Text = "Визуальные"
+tabHeaderLabel.TextColor3 = C.text
+tabHeaderLabel.TextXAlignment = Enum.TextXAlignment.Left
+tabHeaderLabel.Font = Enum.Font.GothamBold
+tabHeaderLabel.TextSize = 13
+tabHeaderLabel.Parent = tabHeader
+
+local canvas = Instance.new("CanvasGroup")
+canvas.Size = UDim2.new(1, 0, 1, -38)
+canvas.Position = UDim2.new(0, 0, 0, 38)
+canvas.BackgroundTransparency = 1
+canvas.GroupTransparency = 0
+canvas.ZIndex = 2
+canvas.Parent = content
 
 local contentScroll = Instance.new("ScrollingFrame")
 contentScroll.Size = UDim2.new(1, 0, 1, 0)
 contentScroll.BackgroundTransparency = 1
 contentScroll.BorderSizePixel = 0
-contentScroll.ScrollBarThickness = 4
-contentScroll.ScrollBarImageColor3 = THEME.stroke
+contentScroll.ScrollBarThickness = 3
+contentScroll.ScrollBarImageColor3 = C.accentDim
+contentScroll.ScrollBarImageTransparency = 0.4
 contentScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-contentScroll.Parent = content
+contentScroll.Parent = canvas
 
 local contentLayout = Instance.new("UIListLayout")
-contentLayout.Padding = UDim.new(0, 5)
+contentLayout.Padding = UDim.new(0, 6)
 contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
 contentLayout.Parent = contentScroll
 
-local contentPadding = Instance.new("UIPadding")
-contentPadding.PaddingRight = UDim.new(0, 6)
-contentPadding.Parent = contentScroll
+local contentPad = Instance.new("UIPadding")
+contentPad.PaddingTop = UDim.new(0, 12)
+contentPad.PaddingLeft = UDim.new(0, 14)
+contentPad.PaddingRight = UDim.new(0, 14)
+contentPad.PaddingBottom = UDim.new(0, 12)
+contentPad.Parent = contentScroll
 
 contentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    contentScroll.CanvasSize = UDim2.new(0, 0, 0, contentLayout.AbsoluteContentSize.Y + 10)
+    contentScroll.CanvasSize = UDim2.new(0, 0, 0, contentLayout.AbsoluteContentSize.Y + 24)
 end)
 
+-- ============== FOV CIRCLE ==============
+local fovCircle = Instance.new("Frame")
+fovCircle.Name = "AimFovCircle"
+fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
+fovCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
+fovCircle.Size = UDim2.new(0, 0, 0, 0)
+fovCircle.BackgroundTransparency = 1
+fovCircle.BorderSizePixel = 0
+fovCircle.Visible = false
+fovCircle.ZIndex = 10
+fovCircle.Parent = screenGui
+round(fovCircle, 999)
+
+local fovStroke = Instance.new("UIStroke")
+fovStroke.Thickness = 1
+fovStroke.Color = C.accent
+fovStroke.Transparency = 0.3
+fovStroke.Parent = fovCircle
+
+-- ============== KEYBIND SYSTEM ==============
+local keybindRegistry = {}  -- [label] = { row, indicator, action, key }
+local listeningRow = nil
+
+local function registerKeybind(row, label, indicatorPos, action)
+    local indicator = Instance.new("TextLabel")
+    indicator.Name = "BindIndicator"
+    indicator.Size = UDim2.new(0, 70, 0, 14)
+    indicator.Position = indicatorPos
+    indicator.BackgroundTransparency = 1
+    indicator.Text = ""
+    indicator.TextColor3 = C.textMute
+    indicator.TextXAlignment = Enum.TextXAlignment.Right
+    indicator.Font = Enum.Font.GothamBold
+    indicator.TextSize = 10
+    indicator.Parent = row
+
+    keybindRegistry[label] = {
+        row = row,
+        indicator = indicator,
+        action = action,
+        key = nil,
+    }
+
+    row.InputBegan:Connect(function(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton3 then return end
+        if listeningRow then return end
+        listeningRow = label
+        indicator.Text = "нажми..."
+        indicator.TextColor3 = C.accent
+
+        local conn
+        conn = UserInputService.InputBegan:Connect(function(input2)
+            if input2.UserInputType ~= Enum.UserInputType.Keyboard then return end
+            conn:Disconnect()
+            indicator.TextColor3 = C.textMute
+            listeningRow = nil
+
+            if input2.KeyCode == Enum.KeyCode.Escape then
+                local data = keybindRegistry[label]
+                if data.key then
+                    indicator.Text = "[" .. data.key.Name .. "]"
+                else
+                    indicator.Text = ""
+                end
+                return
+            end
+
+            -- убираем старый бинд с этой клавиши у других
+            for otherLabel, otherData in pairs(keybindRegistry) do
+                if otherLabel ~= label and otherData.key == input2.KeyCode then
+                    otherData.key = nil
+                    if otherData.indicator then otherData.indicator.Text = "" end
+                end
+            end
+
+            local data = keybindRegistry[label]
+            data.key = input2.KeyCode
+            indicator.Text = "[" .. input2.KeyCode.Name .. "]"
+        end)
+    end)
+
+    return indicator
+end
+
+-- Глобальный обработчик биндов
+bind(UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.UserInputType ~= Enum.UserInputType.Keyboard then return end
+    if input.KeyCode == Enum.KeyCode.Escape then
+        -- ESC — снять бинд с последней наведённой строки? Нет, просто игнор
+    end
+    for _, data in pairs(keybindRegistry) do
+        if data.key == input.KeyCode and data.action then
+            data.action()
+        end
+    end
+end))
+
+-- ============== ВКЛАДКИ ==============
 local tabButtons = {}
 local tabNames = {
-    visuals   = "Визуальные",
-    world     = "Мир",
-    teleport  = "Телепорт",
-    cosmetics = "Косметика",
-    misc      = "Разное",
-    menu      = "Меню",
+    visuals   = { label = "Визуальные", icon = "◉" },
+    world     = { label = "Мир",        icon = "◐" },
+    teleport  = { label = "Телепорт",   icon = "➤" },
+    cosmetics = { label = "Косметика",  icon = "✦" },
+    misc      = { label = "Разное",     icon = "⚙" },
+    menu      = { label = "Меню",       icon = "☰" },
 }
 
 local function switchTab(tabId)
+    if state.tabSwitching then return end
+    state.tabSwitching = true
+    TweenService:Create(canvas, TweenInfo.new(0.12), {GroupTransparency = 1}):Play()
+    task.wait(0.12)
+
     state.currentTab = tabId
-    local th = getTheme()
     for id, btn in pairs(tabButtons) do
         local isActive = (id == tabId)
-        btn.BackgroundColor3 = isActive and th.tabAct or th.tabBg
-        btn.TextColor3 = isActive and Color3.fromRGB(255,255,255) or Color3.fromRGB(150,150,170)
+        btn.BackgroundColor3 = isActive and C.tabActive or C.sidebar
+        local nameL = btn:FindFirstChild("TabName")
+        local iconL = btn:FindFirstChild("TabIcon")
+        if nameL then nameL.TextColor3 = isActive and C.accent or C.textDim end
+        if iconL then iconL.TextColor3 = isActive and C.accent or C.textMute end
     end
+    if tabNames[tabId] then tabHeaderLabel.Text = tabNames[tabId].label end
+
     for _, child in ipairs(contentScroll:GetChildren()) do
         if child:IsA("GuiObject") then
             child.Visible = (child:GetAttribute("Tab") == tabId)
         end
     end
+
+    TweenService:Create(canvas, TweenInfo.new(0.12), {GroupTransparency = 0}):Play()
+    task.wait(0.12)
+    state.tabSwitching = false
 end
 
-for id, label in pairs(tabNames) do
+for id, info in pairs(tabNames) do
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(0, 71, 1, 0)
-    btn.BackgroundColor3 = THEME.tabBg
+    btn.Size = UDim2.new(1, 0, 0, 34)
+    btn.BackgroundColor3 = C.sidebar
     btn.BorderSizePixel = 0
-    btn.Text = label
-    btn.TextColor3 = Color3.fromRGB(150, 150, 170)
-    btn.Font = Enum.Font.GothamMedium
-    btn.TextSize = 11
-    btn.Parent = tabBar
-    round(btn, 6)
+    btn.AutoButtonColor = false
+    btn.Text = ""
+    btn.Parent = sidebarList
+    round(btn, 5)
+    attachHoverScale(btn, 1.02)
+
+    local icon = Instance.new("TextLabel")
+    icon.Name = "TabIcon"
+    icon.Size = UDim2.new(0, 22, 1, 0)
+    icon.Position = UDim2.new(0, 10, 0, 0)
+    icon.BackgroundTransparency = 1
+    icon.Text = info.icon
+    icon.TextColor3 = C.textMute
+    icon.Font = Enum.Font.GothamBold
+    icon.TextSize = 14
+    icon.TextXAlignment = Enum.TextXAlignment.Left
+    icon.Parent = btn
+
+    local nameL = Instance.new("TextLabel")
+    nameL.Name = "TabName"
+    nameL.Size = UDim2.new(1, -40, 1, 0)
+    nameL.Position = UDim2.new(0, 36, 0, 0)
+    nameL.BackgroundTransparency = 1
+    nameL.Text = info.label
+    nameL.TextColor3 = C.textDim
+    nameL.TextXAlignment = Enum.TextXAlignment.Left
+    nameL.Font = Enum.Font.GothamMedium
+    nameL.TextSize = 12
+    nameL.Parent = btn
 
     btn.MouseEnter:Connect(function()
-        if state.currentTab ~= id then btn.BackgroundColor3 = getTheme().tabHov end
+        if state.currentTab ~= id then
+            btn.BackgroundColor3 = C.tabHover
+            nameL.TextColor3 = C.text
+        end
     end)
     btn.MouseLeave:Connect(function()
-        if state.currentTab ~= id then btn.BackgroundColor3 = getTheme().tabBg end
+        if state.currentTab ~= id then
+            btn.BackgroundColor3 = C.sidebar
+            nameL.TextColor3 = C.textDim
+        end
     end)
     btn.MouseButton1Click:Connect(function() switchTab(id) end)
     tabButtons[id] = btn
@@ -270,171 +685,202 @@ end
 
 -- ============== UI ХЕЛПЕРЫ ==============
 local function makeSectionLabel(text, tabId)
+    local wrap = Instance.new("Frame")
+    wrap.Size = UDim2.new(1, 0, 0, 26)
+    wrap.BackgroundTransparency = 1
+    wrap.Parent = contentScroll
+    wrap:SetAttribute("Tab", tabId)
+
+    local bar = Instance.new("Frame")
+    bar.Size = UDim2.new(0, 3, 0, 12)
+    bar.Position = UDim2.new(0, 2, 0.5, -6)
+    bar.BackgroundColor3 = C.accent
+    bar.BorderSizePixel = 0
+    bar.Parent = wrap
+    round(bar, 2)
+
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, 0, 0, 24)
+    lbl.Size = UDim2.new(1, -20, 1, 0)
+    lbl.Position = UDim2.new(0, 14, 0, 0)
     lbl.BackgroundTransparency = 1
     lbl.Text = text
-    lbl.TextColor3 = getTheme().accent
+    lbl.TextColor3 = C.text
     lbl.TextXAlignment = Enum.TextXAlignment.Left
     lbl.Font = Enum.Font.GothamBold
     lbl.TextSize = 12
-    lbl.Parent = contentScroll
-    lbl:SetAttribute("Tab", tabId)
-    lbl:SetAttribute("TR", "accentText")
-    return lbl
+    lbl.Parent = wrap
+    return wrap
 end
 
 local function makeToggle(text, defaultOn, tabId, callback)
     local row = Instance.new("TextButton")
     row.Size = UDim2.new(1, 0, 0, 34)
-    row.BackgroundColor3 = getTheme().row
+    row.BackgroundColor3 = C.row
     row.BorderSizePixel = 0
     row.AutoButtonColor = false
     row.Text = ""
     row.Parent = contentScroll
     row:SetAttribute("Tab", tabId)
-    row:SetAttribute("TR", "row")
-    round(row, 6)
+    round(row, 5)
+    attachHoverScale(row, 1.02)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -70, 1, 0)
+    label.Size = UDim2.new(1, -120, 1, 0)
     label.Position = UDim2.new(0, 14, 0, 0)
     label.BackgroundTransparency = 1
     label.Text = text
-    label.TextColor3 = Color3.fromRGB(230, 230, 245)
+    label.TextColor3 = C.text
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Font = Enum.Font.GothamMedium
-    label.TextSize = 13
+    label.TextSize = 12
     label.Parent = row
 
     local track = Instance.new("Frame")
-    track.Size = UDim2.new(0, 38, 0, 20)
-    track.Position = UDim2.new(1, -52, 0.5, -10)
-    track.BackgroundColor3 = defaultOn and Color3.fromRGB(50, 150, 90) or Color3.fromRGB(60, 60, 75)
+    track.Size = UDim2.new(0, 34, 0, 18)
+    track.Position = UDim2.new(1, -48, 0.5, -9)
+    track.BackgroundColor3 = defaultOn and C.accent or C.track
     track.BorderSizePixel = 0
     track.Parent = row
-    round(track, 10)
+    round(track, 9)
 
     local knob = Instance.new("Frame")
-    knob.Size = UDim2.new(0, 16, 0, 16)
-    knob.Position = defaultOn and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
-    knob.BackgroundColor3 = Color3.fromRGB(240, 240, 250)
+    knob.Size = UDim2.new(0, 12, 0, 12)
+    knob.Position = defaultOn and UDim2.new(1, -15, 0.5, -6) or UDim2.new(0, 3, 0.5, -6)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     knob.BorderSizePixel = 0
     knob.Parent = track
-    round(knob, 8)
+    round(knob, 6)
 
     local st = defaultOn
-    row.MouseEnter:Connect(function() row.BackgroundColor3 = getTheme().rowHov end)
-    row.MouseLeave:Connect(function() row.BackgroundColor3 = getTheme().row end)
-    row.MouseButton1Click:Connect(function()
-        st = not st
-        track.BackgroundColor3 = st and Color3.fromRGB(50, 150, 90) or Color3.fromRGB(60, 60, 75)
+    local function setValue(newVal)
+        st = newVal
+        TweenService:Create(track, TweenInfo.new(0.15), {BackgroundColor3 = st and C.accent or C.track}):Play()
         if st then
-            knob:TweenPosition(UDim2.new(1, -18, 0.5, -8), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+            knob:TweenPosition(UDim2.new(1, -15, 0.5, -6), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
         else
-            knob:TweenPosition(UDim2.new(0, 2, 0.5, -8), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+            knob:TweenPosition(UDim2.new(0, 3, 0.5, -6), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
         end
         callback(st)
-    end)
+    end
+    local function toggle() setValue(not st) end
+
+    row.MouseEnter:Connect(function() row.BackgroundColor3 = C.rowHover end)
+    row.MouseLeave:Connect(function() row.BackgroundColor3 = C.row end)
+    row.MouseButton1Click:Connect(toggle)
+
+    registerKeybind(row, text, UDim2.new(1, -140, 0.5, -7), toggle)
     return row
 end
 
 local function makeMasterToggle(text, defaultOn, tabId, callback)
     local row = Instance.new("TextButton")
-    row.Size = UDim2.new(1, 0, 0, 46)
-    row.BackgroundColor3 = defaultOn and Color3.fromRGB(45, 75, 60) or getTheme().row
+    row.Size = UDim2.new(1, 0, 0, 42)
+    row.BackgroundColor3 = C.panelBg
     row.BorderSizePixel = 0
     row.AutoButtonColor = false
     row.Text = ""
     row.Parent = contentScroll
     row:SetAttribute("Tab", tabId)
-    round(row, 6)
+    round(row, 5)
+    attachHoverScale(row, 1.02)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -100, 1, 0)
-    label.Position = UDim2.new(0, 14, 0, 0)
+    label.Size = UDim2.new(1, -220, 1, 0)
+    label.Position = UDim2.new(0, 16, 0, 0)
     label.BackgroundTransparency = 1
     label.Text = text
-    label.TextColor3 = Color3.fromRGB(230, 230, 245)
+    label.TextColor3 = C.text
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Font = Enum.Font.GothamBold
-    label.TextSize = 14
+    label.TextSize = 13
     label.Parent = row
 
     local status = Instance.new("TextLabel")
-    status.Size = UDim2.new(0, 40, 1, 0)
-    status.Position = UDim2.new(1, -100, 0, 0)
+    status.Size = UDim2.new(0, 50, 1, 0)
+    status.Position = UDim2.new(1, -108, 0, 0)
     status.BackgroundTransparency = 1
-    status.Text = defaultOn and "ВКЛ" or "ВЫКЛ"
-    status.TextColor3 = defaultOn and Color3.fromRGB(120, 230, 160) or Color3.fromRGB(150, 150, 170)
+    status.Text = defaultOn and "on" or "off"
+    status.TextColor3 = defaultOn and C.accent or C.textMute
     status.TextXAlignment = Enum.TextXAlignment.Right
     status.Font = Enum.Font.GothamBold
-    status.TextSize = 12
+    status.TextSize = 11
     status.Parent = row
 
     local track = Instance.new("Frame")
-    track.Size = UDim2.new(0, 42, 0, 22)
-    track.Position = UDim2.new(1, -54, 0.5, -11)
-    track.BackgroundColor3 = defaultOn and Color3.fromRGB(50, 150, 90) or Color3.fromRGB(60, 60, 75)
+    track.Size = UDim2.new(0, 38, 0, 20)
+    track.Position = UDim2.new(1, -50, 0.5, -10)
+    track.BackgroundColor3 = defaultOn and C.accent or C.track
     track.BorderSizePixel = 0
     track.Parent = row
-    round(track, 11)
+    round(track, 10)
 
     local knob = Instance.new("Frame")
-    knob.Size = UDim2.new(0, 18, 0, 18)
-    knob.Position = defaultOn and UDim2.new(1, -20, 0.5, -9) or UDim2.new(0, 2, 0.5, -9)
-    knob.BackgroundColor3 = Color3.fromRGB(240, 240, 250)
+    knob.Size = UDim2.new(0, 14, 0, 14)
+    knob.Position = defaultOn and UDim2.new(1, -17, 0.5, -7) or UDim2.new(0, 3, 0.5, -7)
+    knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     knob.BorderSizePixel = 0
     knob.Parent = track
-    round(knob, 9)
+    round(knob, 7)
 
     local st = defaultOn
-    row.MouseButton1Click:Connect(function()
-        st = not st
-        row.BackgroundColor3 = st and Color3.fromRGB(45, 75, 60) or getTheme().row
-        track.BackgroundColor3 = st and Color3.fromRGB(50, 150, 90) or Color3.fromRGB(60, 60, 75)
-        status.Text = st and "ВКЛ" or "ВЫКЛ"
-        status.TextColor3 = st and Color3.fromRGB(120, 230, 160) or Color3.fromRGB(150, 150, 170)
+    local function setValue(newVal)
+        st = newVal
+        TweenService:Create(track, TweenInfo.new(0.15), {BackgroundColor3 = st and C.accent or C.track}):Play()
+        status.Text = st and "on" or "off"
+        TweenService:Create(status, TweenInfo.new(0.15), {TextColor3 = st and C.accent or C.textMute}):Play()
         if st then
-            knob:TweenPosition(UDim2.new(1, -20, 0.5, -9), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+            knob:TweenPosition(UDim2.new(1, -17, 0.5, -7), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
         else
-            knob:TweenPosition(UDim2.new(0, 2, 0.5, -9), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
+            knob:TweenPosition(UDim2.new(0, 3, 0.5, -7), Enum.EasingDirection.Out, Enum.EasingStyle.Quad, 0.15, true)
         end
         callback(st)
-    end)
+    end
+    local function toggle() setValue(not st) end
+
+    row.MouseEnter:Connect(function() row.BackgroundColor3 = C.rowHover end)
+    row.MouseLeave:Connect(function() row.BackgroundColor3 = C.panelBg end)
+    row.MouseButton1Click:Connect(toggle)
+
+    registerKeybind(row, text, UDim2.new(1, -220, 0.5, -7), toggle)
     return row
 end
 
 local function makeColorButton(text, initialColor, tabId, callback)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, 0, 0, 34)
-    btn.BackgroundColor3 = getTheme().row
+    btn.BackgroundColor3 = C.row
     btn.BorderSizePixel = 0
     btn.AutoButtonColor = false
     btn.Text = ""
     btn.Parent = contentScroll
     btn:SetAttribute("Tab", tabId)
-    btn:SetAttribute("TR", "row")
-    round(btn, 6)
+    round(btn, 5)
+    attachHoverScale(btn, 1.02)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -70, 1, 0)
+    label.Size = UDim2.new(1, -100, 1, 0)
     label.Position = UDim2.new(0, 14, 0, 0)
     label.BackgroundTransparency = 1
     label.Text = text
-    label.TextColor3 = Color3.fromRGB(230, 230, 245)
+    label.TextColor3 = C.text
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Font = Enum.Font.GothamMedium
-    label.TextSize = 13
+    label.TextSize = 12
     label.Parent = btn
 
     local swatch = Instance.new("Frame")
-    swatch.Size = UDim2.new(0, 26, 0, 26)
-    swatch.Position = UDim2.new(1, -40, 0.5, -13)
+    swatch.Size = UDim2.new(0, 22, 0, 22)
+    swatch.Position = UDim2.new(1, -36, 0.5, -11)
     swatch.BackgroundColor3 = initialColor
     swatch.BorderSizePixel = 0
     swatch.Parent = btn
     round(swatch, 4)
+
+    local swatchStroke = Instance.new("UIStroke")
+    swatchStroke.Color = Color3.fromRGB(255, 255, 255)
+    swatchStroke.Thickness = 1
+    swatchStroke.Transparency = 0.8
+    swatchStroke.Parent = swatch
 
     local presets = {
         Color3.fromRGB(0, 170, 255), Color3.fromRGB(255, 40, 40),
@@ -447,72 +893,89 @@ local function makeColorButton(text, initialColor, tabId, callback)
         if col == initialColor then idx = i break end
     end
 
-    btn.MouseEnter:Connect(function() btn.BackgroundColor3 = getTheme().rowHov end)
-    btn.MouseLeave:Connect(function() btn.BackgroundColor3 = getTheme().row end)
-    btn.MouseButton1Click:Connect(function()
+    btn.MouseEnter:Connect(function() btn.BackgroundColor3 = C.rowHover end)
+    btn.MouseLeave:Connect(function() btn.BackgroundColor3 = C.row end)
+
+    local function cycle()
         idx = idx % #presets + 1
         local col = presets[idx]
         swatch.BackgroundColor3 = col
         callback(col)
-    end)
+    end
+
+    btn.MouseButton1Click:Connect(cycle)
+    registerKeybind(btn, text, UDim2.new(1, -130, 0.5, -7), cycle)
     return btn
 end
 
-local function makeSlider(text, minVal, maxVal, defaultVal, tabId, callback)
+local function makeSlider(text, minVal, maxVal, defaultVal, tabId, callback, step)
+    step = step or 1
     local frame = Instance.new("Frame")
     frame.Size = UDim2.new(1, 0, 0, 52)
-    frame.BackgroundColor3 = getTheme().row
+    frame.BackgroundColor3 = C.row
     frame.BorderSizePixel = 0
     frame.Parent = contentScroll
     frame:SetAttribute("Tab", tabId)
-    frame:SetAttribute("TR", "row")
-    round(frame, 6)
+    round(frame, 5)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -14, 0, 20)
-    label.Position = UDim2.new(0, 14, 0, 4)
+    label.Size = UDim2.new(1, -90, 0, 20)
+    label.Position = UDim2.new(0, 14, 0, 6)
     label.BackgroundTransparency = 1
-    label.Text = text .. ": " .. defaultVal
-    label.TextColor3 = Color3.fromRGB(230, 230, 245)
+    label.Text = text
+    label.TextColor3 = C.text
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.Font = Enum.Font.GothamMedium
-    label.TextSize = 13
+    label.TextSize = 12
     label.Parent = frame
 
+    local valueLabel = Instance.new("TextLabel")
+    valueLabel.Size = UDim2.new(0, 60, 0, 20)
+    valueLabel.Position = UDim2.new(1, -74, 0, 6)
+    valueLabel.BackgroundTransparency = 1
+    valueLabel.Text = tostring(defaultVal)
+    valueLabel.TextColor3 = C.accent
+    valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+    valueLabel.Font = Enum.Font.GothamBold
+    valueLabel.TextSize = 12
+    valueLabel.Parent = frame
+
     local track = Instance.new("TextButton")
-    track.Size = UDim2.new(1, -28, 0, 8)
-    track.Position = UDim2.new(0, 14, 0, 32)
-    track.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    track.Size = UDim2.new(1, -28, 0, 6)
+    track.Position = UDim2.new(0, 14, 0, 34)
+    track.BackgroundColor3 = C.track
     track.BorderSizePixel = 0
     track.AutoButtonColor = false
     track.Text = ""
     track.Parent = frame
-    round(track, 4)
+    round(track, 3)
 
     local fill = Instance.new("Frame")
     fill.Name = "Fill"
     fill.Size = UDim2.new((defaultVal - minVal) / (maxVal - minVal), 0, 1, 0)
-    fill.BackgroundColor3 = getTheme().accent
+    fill.BackgroundColor3 = C.accent
     fill.BorderSizePixel = 0
     fill.Parent = track
-    round(fill, 4)
+    round(fill, 3)
 
     local handle = Instance.new("Frame")
-    handle.Size = UDim2.new(0, 14, 0, 14)
-    handle.Position = UDim2.new((defaultVal - minVal) / (maxVal - minVal), -7, 0.5, -7)
-    handle.BackgroundColor3 = Color3.fromRGB(240, 240, 250)
+    handle.Size = UDim2.new(0, 12, 0, 12)
+    handle.Position = UDim2.new((defaultVal - minVal) / (maxVal - minVal), -6, 0.5, -6)
+    handle.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
     handle.BorderSizePixel = 0
     handle.ZIndex = 2
     handle.Parent = track
-    round(handle, 7)
+    round(handle, 6)
 
     local dragging = false
     local function updateSlider(input)
         local relX = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
-        local val = math.floor(minVal + (maxVal - minVal) * relX + 0.5)
+        local val = minVal + (maxVal - minVal) * relX
+        if step >= 1 then val = math.floor(val / step + 0.5) * step end
         fill.Size = UDim2.new(relX, 0, 1, 0)
-        handle.Position = UDim2.new(relX, -7, 0.5, -7)
-        label.Text = text .. ": " .. val
+        handle.Position = UDim2.new(relX, -6, 0.5, -6)
+        if step >= 1 then valueLabel.Text = tostring(math.floor(val + 0.5))
+        else valueLabel.Text = string.format("%.2f", val) end
         callback(val)
     end
 
@@ -542,27 +1005,113 @@ end
 local function makeActionButton(text, tabId, color, callback)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, 0, 0, 34)
-    btn.BackgroundColor3 = color or getTheme().row
+    btn.BackgroundColor3 = color or C.row
     btn.BorderSizePixel = 0
     btn.AutoButtonColor = false
     btn.Text = "  " .. text
-    btn.TextColor3 = Color3.fromRGB(230, 230, 245)
+    btn.TextColor3 = color and Color3.fromRGB(255, 255, 255) or C.text
     btn.TextXAlignment = Enum.TextXAlignment.Left
     btn.Font = Enum.Font.GothamMedium
-    btn.TextSize = 13
+    btn.TextSize = 12
     btn.Parent = contentScroll
     btn:SetAttribute("Tab", tabId)
-    if not color then btn:SetAttribute("TR", "row") end
-    round(btn, 6)
+    round(btn, 5)
+    attachHoverScale(btn, 1.03)
 
     btn.MouseEnter:Connect(function()
-        if not color then btn.BackgroundColor3 = getTheme().rowHov end
+        if not color then btn.BackgroundColor3 = C.rowHover end
     end)
     btn.MouseLeave:Connect(function()
-        if not color then btn.BackgroundColor3 = getTheme().row end
+        if not color then btn.BackgroundColor3 = C.row end
     end)
-    btn.MouseButton1Click:Connect(function() callback(btn) end)
+
+    local function execute() callback(btn) end
+    btn.MouseButton1Click:Connect(execute)
+
+    registerKeybind(btn, text, UDim2.new(1, -90, 0.5, -7), execute)
     return btn
+end
+
+local function makeTextBox(placeholder, tabId, onApply)
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.new(1, 0, 0, 34)
+    frame.BackgroundColor3 = C.row
+    frame.BorderSizePixel = 0
+    frame.Parent = contentScroll
+    frame:SetAttribute("Tab", tabId)
+    round(frame, 5)
+
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(1, -110, 1, 0)
+    box.Position = UDim2.new(0, 10, 0, 0)
+    box.BackgroundTransparency = 1
+    box.Text = ""
+    box.PlaceholderText = placeholder
+    box.TextColor3 = C.text
+    box.PlaceholderColor3 = C.textMute
+    box.Font = Enum.Font.GothamMedium
+    box.TextSize = 12
+    box.TextXAlignment = Enum.TextXAlignment.Left
+    box.ClearTextOnFocus = false
+    box.Parent = frame
+
+    local apply = Instance.new("TextButton")
+    apply.Size = UDim2.new(0, 90, 1, 0)
+    apply.Position = UDim2.new(1, -95, 0, 0)
+    apply.BackgroundColor3 = C.tabActive
+    apply.BorderSizePixel = 0
+    apply.Text = "Применить"
+    apply.TextColor3 = C.accent
+    apply.Font = Enum.Font.GothamBold
+    apply.TextSize = 11
+    apply.Parent = frame
+    round(apply, 4)
+
+    apply.MouseButton1Click:Connect(function()
+        onApply(box.Text)
+    end)
+    return frame, box
+end
+
+-- ============== ПРИМЕНЕНИЕ АКЦЕНТА ==============
+local function applyAccentColor(newColor)
+    local old = C.accent
+    if old == newColor then return end
+    C.accent = newColor
+    C.accentDim = Color3.new(newColor.R * 0.65, newColor.G * 0.65, newColor.B * 0.65)
+
+    for _, d in ipairs(screenGui:GetDescendants()) do
+        if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+            if d.TextColor3 == old then d.TextColor3 = newColor end
+        end
+        if d:IsA("Frame") or d:IsA("TextButton") then
+            if d.BackgroundColor3 == old then d.BackgroundColor3 = newColor end
+        end
+        if d:IsA("UIStroke") then
+            if d.Color == old then d.Color = newColor end
+        end
+    end
+
+    logoDot.BackgroundColor3 = newColor
+    userDot.BackgroundColor3 = C.accentDim
+    contentScroll.ScrollBarImageColor3 = C.accentDim
+    fovStroke.Color = newColor
+    if state.currentTab and tabButtons[state.currentTab] then
+        tabButtons[state.currentTab].BackgroundColor3 = C.tabActive
+    end
+end
+
+local function applyBgImage()
+    if state.configBgImageEnabled and state.configBgImage ~= "" then
+        bgImage.Image = state.configBgImage
+        bgImage.ImageTransparency = state.configBgImageTransparency
+        bgImage.Visible = true
+        content.BackgroundTransparency = 0.15
+    else
+        bgImage.Visible = false
+        bgImage.Image = ""
+        content.BackgroundTransparency = 0
+    end
 end
 
 -- ============== РОЛИ ==============
@@ -794,25 +1343,57 @@ local function createBox2D(character)
     state.boxes2D[character] = box
 end
 
+-- ============== SKELETON ==============
+local R15_BONES = {
+    {"Head", "UpperTorso"},
+    {"UpperTorso", "LowerTorso"},
+    {"UpperTorso", "LeftUpperArm"}, {"LeftUpperArm", "LeftLowerArm"},
+    {"UpperTorso", "RightUpperArm"}, {"RightUpperArm", "RightLowerArm"},
+    {"LowerTorso", "LeftUpperLeg"}, {"LeftUpperLeg", "LeftLowerLeg"},
+    {"LowerTorso", "RightUpperLeg"}, {"RightUpperLeg", "RightLowerLeg"},
+    {"LeftLowerArm", "LeftHand"}, {"RightLowerArm", "RightHand"},
+    {"LeftLowerLeg", "LeftFoot"}, {"RightLowerLeg", "RightFoot"},
+}
+local R6_BONES = {
+    {"Head", "Torso"},
+    {"Torso", "Left Arm"}, {"Torso", "Right Arm"},
+    {"Torso", "Left Leg"}, {"Torso", "Right Leg"},
+}
+local MAX_BONES = 14
+
+local drawingAvailable = pcall(function()
+    local testLine = Drawing.new("Line")
+    testLine:Remove()
+    return true
+end)
+
 local function createSkeleton(character)
     if state.skeletons[character] then return end
+    if not drawingAvailable then return end
     local skel = {}
-    local bones = {
-        {"Head", "UpperTorso"}, {"UpperTorso", "LowerTorso"},
-        {"UpperTorso", "LeftUpperArm"}, {"LeftUpperArm", "LeftLowerArm"},
-        {"UpperTorso", "RightUpperArm"}, {"RightUpperArm", "RightLowerArm"},
-        {"LowerTorso", "LeftUpperLeg"}, {"LeftUpperLeg", "LeftLowerLeg"},
-        {"LowerTorso", "RightUpperLeg"}, {"RightUpperLeg", "RightLowerLeg"},
-    }
-    for i, pair in ipairs(bones) do
-        local line = Drawing.new("Line")
-        line.Thickness = 1.5
-        line.Color = Color3.fromRGB(255, 255, 255)
-        line.Transparency = 1
-        line.Visible = false
-        skel[i] = {line = line, from = pair[1], to = pair[2]}
+    for i = 1, MAX_BONES do
+        local ok, line = pcall(Drawing.new, "Line")
+        if ok and line then
+            line.Thickness = 1.5
+            line.Color = Color3.fromRGB(255, 255, 255)
+            line.Transparency = 1
+            line.Visible = false
+            skel[i] = line
+        else
+            for _, l in ipairs(skel) do pcall(function() l:Remove() end) end
+            return
+        end
     end
     state.skeletons[character] = skel
+end
+
+local function destroySkeleton(char)
+    local skel = state.skeletons[char]
+    if not skel then return end
+    for _, line in ipairs(skel) do
+        pcall(function() line:Remove() end)
+    end
+    state.skeletons[char] = nil
 end
 
 -- ============== TELEPORT CORE ==============
@@ -927,11 +1508,8 @@ local function findEscapeTrigger()
                 local pp = obj:FindFirstChildOfClass("ProximityPrompt")
                 if pp and pp.Parent then
                     local par = pp.Parent
-                    if par:IsA("BasePart") then
-                        pos = par.Position
-                    elseif par:IsA("Attachment") and par.Parent then
-                        pos = par.WorldPosition
-                    end
+                    if par:IsA("BasePart") then pos = par.Position
+                    elseif par:IsA("Attachment") and par.Parent then pos = par.WorldPosition end
                 end
 
                 if pos then
@@ -1002,9 +1580,7 @@ local function saveCheckpoint()
 end
 
 local function goToCheckpoint()
-    if state.checkpoint then
-        teleportToCFrame(state.checkpoint)
-    end
+    if state.checkpoint then teleportToCFrame(state.checkpoint) end
 end
 
 -- ============== АВТО-ПОБЕГ ==============
@@ -1015,7 +1591,6 @@ local function startAutoEscape()
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
-
         local inst, pos = findEscapeTrigger()
         if inst and pos and state.autoEscapeRef ~= inst then
             state.autoEscapeRef = inst
@@ -1028,6 +1603,99 @@ local function stopAutoEscape()
     if state.autoEscapeConn then
         state.autoEscapeConn:Disconnect()
         state.autoEscapeConn = nil
+    end
+end
+
+-- ============== АИМБОТ (только противоположный класс) ==============
+local function findAimTarget()
+    local cam = Workspace.CurrentCamera
+    if not cam then return nil end
+
+    -- Определяем свою роль и целимся в противоположную
+    local myRole = state.roleCache[LocalPlayer] or getPlayerRole(LocalPlayer)
+    local targetRole = (myRole == "killer") and "survivor" or "killer"
+
+    local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+    local fovPixels = state.aimbotFovSize
+    local closest, closestDist = nil, math.huge
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == LocalPlayer then continue end
+        local pRole = state.roleCache[player] or "survivor"
+        if pRole ~= targetRole then continue end
+
+        local char = player.Character
+        if not char then continue end
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then continue end
+
+        local target = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+        if not target then continue end
+
+        local screenPos, onScreen = cam:WorldToViewportPoint(target.Position)
+        if not onScreen then continue end
+
+        local dist2d = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
+        if dist2d <= fovPixels and dist2d < closestDist then
+            closestDist = dist2d
+            closest = target
+        end
+    end
+    return closest
+end
+
+local function aimbotStep(dt)
+    if state.unloaded or not state.aimbotEnabled then return end
+    local cam = Workspace.CurrentCamera
+    if not cam then return end
+
+    local target = findAimTarget()
+    if target then
+        local camPos = cam.CFrame.Position
+        local lookCF = CFrame.lookAt(camPos, target.Position)
+        cam.CFrame = cam.CFrame:Lerp(lookCF, 0.35)
+    end
+end
+
+-- ============== AVOID KILLER ==============
+local function avoidKillerStep()
+    if state.unloaded or not state.avoidKiller then return end
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    local killerRoot = nil
+    local closestDist = math.huge
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and state.roleCache[p] == "killer" then
+            local c = p.Character
+            local r = c and c:FindFirstChild("HumanoidRootPart")
+            if r then
+                local d = (r.Position - hrp.Position).Magnitude
+                if d < closestDist then
+                    closestDist = d
+                    killerRoot = r
+                end
+            end
+        end
+    end
+
+    if killerRoot and closestDist < state.avoidKillerDistance then
+        local offset = hrp.Position - killerRoot.Position
+        local dir
+        if offset.Magnitude > 0.01 then
+            dir = offset.Unit
+        else
+            dir = Vector3.new(1, 0, 0)
+        end
+        -- Чем ближе убийца — тем сильнее толчок
+        local strength = (1 - closestDist / state.avoidKillerDistance) * 120
+        hrp.AssemblyLinearVelocity = Vector3.new(
+            dir.X * strength,
+            hrp.AssemblyLinearVelocity.Y,
+            dir.Z * strength
+        )
     end
 end
 
@@ -1143,7 +1811,6 @@ local function startSpin()
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
     if not hum then return end
-
     state.originalAutoRotate = hum.AutoRotate
     hum.AutoRotate = false
 
@@ -1152,10 +1819,7 @@ local function startSpin()
         local h = c and c:FindFirstChildOfClass("Humanoid")
         local hrp = c and c:FindFirstChild("HumanoidRootPart")
         if not h or not hrp then return end
-
         local dir = (state.spinDirection == "left") and -1 or 1
-        -- state.spinSpeed = "оборотов в минуту" * 0.6, где 40 = 1 об/сек
-        -- фактически: 40 = 360°/сек = 1 об/сек, поэтому умножаем на 9
         local step = math.rad(dt * state.spinSpeed * 9 * dir)
         hrp.CFrame = hrp.CFrame * CFrame.Angles(0, step, 0)
     end)
@@ -1168,9 +1832,7 @@ local function stopSpin()
     end
     local char = LocalPlayer.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        hum.AutoRotate = state.originalAutoRotate
-    end
+    if hum then hum.AutoRotate = state.originalAutoRotate end
 end
 
 -- ============== ТЕЛЕПОРТ — UI ==============
@@ -1196,7 +1858,6 @@ local function refreshPlayerList()
     playerListRows = {}
     selectedPlayer = nil
 
-    local th = getTheme()
     local count = 0
     for _, player in ipairs(Players:GetPlayers()) do
         if player == LocalPlayer then continue end
@@ -1204,34 +1865,34 @@ local function refreshPlayerList()
 
         local row = Instance.new("TextButton")
         row.Size = UDim2.new(1, 0, 0, 28)
-        row.BackgroundColor3 = th.row
+        row.BackgroundColor3 = C.row
         row.BorderSizePixel = 0
         row.AutoButtonColor = false
         row.Text = "  " .. player.Name
-        row.TextColor3 = Color3.fromRGB(230, 230, 245)
+        row.TextColor3 = C.text
         row.TextXAlignment = Enum.TextXAlignment.Left
         row.Font = Enum.Font.GothamMedium
         row.TextSize = 12
         row.Parent = playerListFrame
-        row:SetAttribute("TR", "row")
-        round(row, 6)
+        round(row, 4)
+        attachHoverScale(row, 1.02)
 
         row.MouseEnter:Connect(function()
-            if selectedPlayer ~= player then row.BackgroundColor3 = getTheme().rowHov end
+            if selectedPlayer ~= player then row.BackgroundColor3 = C.rowHover end
         end)
         row.MouseLeave:Connect(function()
-            if selectedPlayer ~= player then row.BackgroundColor3 = getTheme().row end
+            if selectedPlayer ~= player then row.BackgroundColor3 = C.row end
         end)
         row.MouseButton1Click:Connect(function()
             selectedPlayer = player
             for _, r in ipairs(playerListRows) do
                 if r:IsA("TextButton") then
-                    r.BackgroundColor3 = getTheme().row
-                    r.TextColor3 = Color3.fromRGB(230, 230, 245)
+                    r.BackgroundColor3 = C.row
+                    r.TextColor3 = C.text
                 end
             end
-            row.BackgroundColor3 = getTheme().accent
-            row.TextColor3 = Color3.fromRGB(255, 255, 255)
+            row.BackgroundColor3 = C.tabActive
+            row.TextColor3 = C.accent
         end)
         table.insert(playerListRows, row)
     end
@@ -1241,7 +1902,7 @@ local function refreshPlayerList()
         empty.Size = UDim2.new(1, 0, 0, 26)
         empty.BackgroundTransparency = 1
         empty.Text = "  Нет других игроков"
-        empty.TextColor3 = Color3.fromRGB(120, 120, 140)
+        empty.TextColor3 = C.textMute
         empty.TextXAlignment = Enum.TextXAlignment.Left
         empty.Font = Enum.Font.Gotham
         empty.TextSize = 12
@@ -1250,117 +1911,95 @@ local function refreshPlayerList()
     end
 end
 
-makeSectionLabel("▬ К ИГРОКАМ ▬", "teleport")
-
-makeActionButton("🔄 Обновить список", "teleport", nil, function()
-    refreshPlayerList()
+makeSectionLabel("К ИГРОКАМ", "teleport")
+makeActionButton("Обновить список", "teleport", nil, function() refreshPlayerList() end)
+makeActionButton("Телепорт к выбранному", "teleport", C.tabActive, function()
+    if not selectedPlayer then return end
+    local pos = getCharacterPosition(selectedPlayer)
+    if pos then teleportToPosition(pos) end
 end)
 
-makeActionButton("🎯 Телепорт к выбранному", "teleport",
-    Color3.fromRGB(60, 110, 170), function()
-        if not selectedPlayer then return end
-        local pos = getCharacterPosition(selectedPlayer)
-        if pos then
-            teleportToPosition(pos)
-        end
-    end)
-
-makeSectionLabel("▬ ЧЕКПОИНТ ▬", "teleport")
-
+makeSectionLabel("ЧЕКПОИНТ", "teleport")
 makeToggle("Бинды F1 / F2", state.checkpointBinds, "teleport", function(on)
     state.checkpointBinds = on
 end)
 
-makeActionButton("💾 Сохранить чекпоинт  (F1)", "teleport", nil, function(btn)
+makeActionButton("Сохранить чекпоинт  (F1)", "teleport", nil, function(btn)
     saveCheckpoint()
-    btn.Text = "  ✅ Сохранено!"
+    btn.Text = "  Сохранено!"
     task.wait(1)
-    btn.Text = "  💾 Сохранить чекпоинт  (F1)"
+    btn.Text = "  Сохранить чекпоинт  (F1)"
 end)
 
-makeActionButton("🚀 Телепорт к чекпоинту  (F2)", "teleport",
-    Color3.fromRGB(60, 110, 170), function(btn)
-        if state.checkpoint then
-            goToCheckpoint()
-            btn.Text = "  ✅ Телепортирован!"
-            task.wait(1)
-            btn.Text = "  🚀 Телепорт к чекпоинту  (F2)"
-        else
-            btn.Text = "  ⚠ Чекпоинт не задан"
-            task.wait(1.5)
-            btn.Text = "  🚀 Телепорт к чекпоинту  (F2)"
-        end
-    end)
-
-makeActionButton("🗑 Удалить чекпоинт", "teleport",
-    Color3.fromRGB(140, 55, 55), function(btn)
-        state.checkpoint = nil
-        if state.checkpointMarker then
-            pcall(function() state.checkpointMarker:Destroy() end)
-            state.checkpointMarker = nil
-        end
-        btn.Text = "  ✅ Удалён"
+makeActionButton("Телепорт к чекпоинту  (F2)", "teleport", C.tabActive, function(btn)
+    if state.checkpoint then
+        goToCheckpoint()
+        btn.Text = "  Телепортирован!"
         task.wait(1)
-        btn.Text = "  🗑 Удалить чекпоинт"
-    end)
+        btn.Text = "  Телепорт к чекпоинту  (F2)"
+    else
+        btn.Text = "  Чекпоинт не задан"
+        task.wait(1.5)
+        btn.Text = "  Телепорт к чекпоинту  (F2)"
+    end
+end)
 
-makeSectionLabel("▬ ОБЪЕКТЫ ▬", "teleport")
+makeActionButton("Удалить чекпоинт", "teleport", nil, function(btn)
+    state.checkpoint = nil
+    if state.checkpointMarker then
+        pcall(function() state.checkpointMarker:Destroy() end)
+        state.checkpointMarker = nil
+    end
+    btn.Text = "  Удалён"
+    task.wait(1)
+    btn.Text = "  Удалить чекпоинт"
+end)
 
-makeActionButton("⚡ Телепорт к ближайшему генератору", "teleport", nil, function(btn)
+makeSectionLabel("ОБЪЕКТЫ", "teleport")
+
+makeActionButton("Телепорт к ближайшему генератору", "teleport", nil, function(btn)
     local inst, pos, dist = findNearestObject(function(obj)
         return classifyObject(obj) == "generator"
     end)
     if pos then
         teleportToPosition(pos)
-        btn.Text = string.format("  ⚡ Готово (%.0f studs)", dist)
-    else
-        btn.Text = "  ⚠ Генератор не найден"
-    end
+        btn.Text = string.format("  Готово (%.0f studs)", dist)
+    else btn.Text = "  Генератор не найден" end
     task.wait(1.5)
-    btn.Text = "  ⚡ Телепорт к ближайшему генератору"
+    btn.Text = "  Телепорт к ближайшему генератору"
 end)
 
-makeActionButton("🚪 Телепорт к выходу (триггер побега)", "teleport", nil, function(btn)
-    local inst, pos, score, dist = findEscapeTrigger()
+makeActionButton("Телепорт к выходу", "teleport", nil, function(btn)
+    local inst, pos = findEscapeTrigger()
     if pos then
         teleportToPosition(pos)
-        btn.Text = string.format("  🚪 Готово! «%s» (score %d, %.0f studs)",
-            inst and inst.Name or "?", score, dist)
-    else
-        btn.Text = "  ⚠ Триггер побега не найден"
-    end
+        btn.Text = string.format("  Готово! «%s»", inst and inst.Name or "?")
+    else btn.Text = "  Триггер побега не найден" end
     task.wait(2)
-    btn.Text = "  🚪 Телепорт к выходу (триггер побега)"
+    btn.Text = "  Телепорт к выходу"
 end)
 
-makeActionButton("🏃 СБЕЖАТЬ  (телепорт в триггер побега)", "teleport",
-    Color3.fromRGB(60, 140, 80), function(btn)
-        local inst, pos, score, dist = findEscapeTrigger()
-        if pos then
-            teleportToPosition(pos)
-            btn.Text = string.format("  ✅ СБЕЖАЛ! «%s» (score %d)", inst and inst.Name or "?", score)
-        else
-            btn.Text = "  ⚠ Триггер побега не найден"
-        end
-        task.wait(2)
-        btn.Text = "  🏃 СБЕЖАТЬ  (телепорт в триггер побега)"
-    end)
+makeActionButton("СБЕЖАТЬ", "teleport", Color3.fromRGB(40, 120, 70), function(btn)
+    local inst, pos = findEscapeTrigger()
+    if pos then
+        teleportToPosition(pos)
+        btn.Text = string.format("  СБЕЖАЛ! «%s»", inst and inst.Name or "?")
+    else btn.Text = "  Триггер побега не найден" end
+    task.wait(2)
+    btn.Text = "  СБЕЖАТЬ"
+end)
 
 makeToggle("Авто-побег при старте раунда", state.autoEscape, "teleport", function(on)
     state.autoEscape = on
     state.autoEscapeRef = nil
-    if on then
-        startAutoEscape()
-    else
-        stopAutoEscape()
-    end
+    if on then startAutoEscape() else stopAutoEscape() end
 end)
 
-makeActionButton("♻ Сбросить авто-побег", "teleport", nil, function(btn)
+makeActionButton("Сбросить авто-побег", "teleport", nil, function(btn)
     state.autoEscapeRef = nil
-    btn.Text = "  ✅ Сброшено"
+    btn.Text = "  Сброшено"
     task.wait(1)
-    btn.Text = "  ♻ Сбросить авто-побег"
+    btn.Text = "  Сбросить авто-побег"
 end)
 
 bind(Players.PlayerAdded:Connect(function() task.wait(0.3) refreshPlayerList() end))
@@ -1391,8 +2030,9 @@ local renderConn = RunService.RenderStepped:Connect(function()
         local hl = state.highlights[char]
         if hl and hl.Parent and hl.Name == "brieliVis_PlayerESP" then
             hl.FillColor = col
-            hl.Enabled = espOn
-            hl.FillTransparency = state.chams and 0.2 or 0.5
+            hl.Enabled = espOn and state.chams
+            hl.FillTransparency = 0.2
+            hl.OutlineTransparency = 0
         end
 
         if espOn and head and root then
@@ -1459,29 +2099,47 @@ local renderConn = RunService.RenderStepped:Connect(function()
             if not state.skeletons[char] then createSkeleton(char) end
             local skel = state.skeletons[char]
             if skel then
-                for _, bone in ipairs(skel) do
-                    local p1 = char:FindFirstChild(bone.from)
-                    local p2 = char:FindFirstChild(bone.to)
-                    if p1 and p2 then
-                        local s1, o1 = cam:WorldToViewportPoint(p1.Position)
-                        local s2, o2 = cam:WorldToViewportPoint(p2.Position)
-                        if o1 and o2 then
-                            bone.line.From = Vector2.new(s1.X, s1.Y)
-                            bone.line.To = Vector2.new(s2.X, s2.Y)
-                            bone.line.Color = col
-                            bone.line.Visible = true
-                        else bone.line.Visible = false end
-                    else bone.line.Visible = false end
+                local bones
+                if char:FindFirstChild("UpperTorso") then
+                    bones = R15_BONES
+                elseif char:FindFirstChild("Torso") then
+                    bones = R6_BONES
+                end
+
+                if bones then
+                    for i, bone in ipairs(bones) do
+                        local line = skel[i]
+                        if line then
+                            local p1 = char:FindFirstChild(bone[1])
+                            local p2 = char:FindFirstChild(bone[2])
+                            if p1 and p2 then
+                                local s1, o1 = cam:WorldToViewportPoint(p1.Position)
+                                local s2, o2 = cam:WorldToViewportPoint(p2.Position)
+                                if o1 and o2 then
+                                    line.From = Vector2.new(s1.X, s1.Y)
+                                    line.To = Vector2.new(s2.X, s2.Y)
+                                    line.Color = col
+                                    line.Visible = true
+                                else line.Visible = false end
+                            else line.Visible = false end
+                        end
+                    end
+                    for i = #bones + 1, MAX_BONES do
+                        if skel[i] then skel[i].Visible = false end
+                    end
+                else
+                    for _, line in ipairs(skel) do line.Visible = false end
                 end
             end
         elseif state.skeletons[char] then
-            for _, bone in ipairs(state.skeletons[char]) do
-                bone.line.Visible = false
+            for _, line in ipairs(state.skeletons[char]) do
+                line.Visible = false
             end
         end
     end
 end)
 
+-- Кэш ролей (включая LocalPlayer)
 task.spawn(function()
     while not state.unloaded do
         for _, p in ipairs(Players:GetPlayers()) do
@@ -1490,6 +2148,22 @@ task.spawn(function()
         task.wait(0.5)
     end
 end)
+
+-- Аимбот + FOV-круг
+pcall(function()
+    RunService:BindToRenderStep("brieliVis_Aimbot",
+        Enum.RenderPriority.Camera.Value + 1,
+        function(dt)
+            if state.unloaded then return end
+            fovCircle.Position = UDim2.new(0.5, 0, 0.5, 0)
+            fovCircle.Size = UDim2.new(0, state.aimbotFovSize * 2, 0, state.aimbotFovSize * 2)
+            fovCircle.Visible = state.aimbotEnabled and state.aimbotShowFov
+            aimbotStep(dt)
+        end)
+end)
+
+-- Avoid killer — отдельный Heartbeat
+state.avoidConn = RunService.Heartbeat:Connect(avoidKillerStep)
 
 -- ============== NOCLIP ==============
 local floorRayParams = RaycastParams.new()
@@ -1598,10 +2272,10 @@ local function setupPlayer(player)
         hl.Adornee = char
         hl.FillColor = getPlayerColor(player)
         hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-        hl.FillTransparency = state.chams and 0.2 or 0.5
+        hl.FillTransparency = 0.2
         hl.OutlineTransparency = 0
         hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.Enabled = state.espEnabled
+        hl.Enabled = state.espEnabled and state.chams
         hl.Parent = char
         state.highlights[char] = hl
     end
@@ -1612,10 +2286,7 @@ local function setupPlayer(player)
         if state.highlights[char] then state.highlights[char]:Destroy() state.highlights[char] = nil end
         if state.billboards[char] then state.billboards[char]:Destroy() state.billboards[char] = nil end
         if state.boxes2D[char] then state.boxes2D[char]:Destroy() state.boxes2D[char] = nil end
-        if state.skeletons[char] then
-            for _, bone in ipairs(state.skeletons[char]) do bone.line:Remove() end
-            state.skeletons[char] = nil
-        end
+        destroySkeleton(char)
     end))
 end
 
@@ -1623,12 +2294,12 @@ for _, p in ipairs(Players:GetPlayers()) do setupPlayer(p) end
 bind(Players.PlayerAdded:Connect(setupPlayer))
 
 -- ============== ВКЛАДКА "ВИЗУАЛЬНЫЕ" ==============
-makeSectionLabel("▬ ESP ▬", "visuals")
+makeSectionLabel("ESP", "visuals")
 
-makeMasterToggle("ESP  (мастер-переключатель)", state.espEnabled, "visuals", function(on)
+makeMasterToggle("ESP (раздел)", state.espEnabled, "visuals", function(on)
     state.espEnabled = on
     for _, hl in pairs(state.highlights) do
-        if hl.Name == "brieliVis_PlayerESP" then hl.Enabled = on end
+        if hl.Name == "brieliVis_PlayerESP" then hl.Enabled = on and state.chams end
         if hl.Name == "brieliVis_WorldESP" and hl.Adornee then
             local cat = classifyObject(hl.Adornee)
             if cat then hl.Enabled = on and getWorldEnabled(cat) end
@@ -1638,12 +2309,12 @@ makeMasterToggle("ESP  (мастер-переключатель)", state.espEnab
         for _, bb in pairs(state.billboards) do bb.Enabled = false end
         for _, box in pairs(state.boxes2D) do box.Visible = false end
         for _, skel in pairs(state.skeletons) do
-            for _, bone in ipairs(skel) do bone.line.Visible = false end
+            for _, line in ipairs(skel) do line.Visible = false end
         end
     end
 end)
 
-makeSectionLabel("▬ ИГРОКИ ▬", "visuals")
+makeSectionLabel("ИГРОКИ", "visuals")
 makeToggle("Ник над головой", state.showName, "visuals", function(on) state.showName = on end)
 makeToggle("Дистанция", state.showDistance, "visuals", function(on) state.showDistance = on end)
 makeToggle("Полоса HP", state.showHealthBar, "visuals", function(on) state.showHealthBar = on end)
@@ -1652,7 +2323,7 @@ makeToggle("Chams (заливка)", state.chams, "visuals", function(on)
     state.chams = on
     for _, hl in pairs(state.highlights) do
         if hl.Name == "brieliVis_PlayerESP" then
-            hl.FillTransparency = on and 0.2 or 0.5
+            hl.Enabled = state.espEnabled and on
         end
     end
 end)
@@ -1664,12 +2335,12 @@ makeToggle("Скелет", state.skeleton, "visuals", function(on)
     state.skeleton = on
     if not on then
         for _, skel in pairs(state.skeletons) do
-            for _, bone in ipairs(skel) do bone.line.Visible = false end
+            for _, line in ipairs(skel) do line.Visible = false end
         end
     end
 end)
 
-makeSectionLabel("▬ ОБЪЕКТЫ МИРА ▬", "visuals")
+makeSectionLabel("ОБЪЕКТЫ МИРА", "visuals")
 makeToggle("Генераторы", state.espGenerators, "visuals", function(on)
     state.espGenerators = on
     for inst, hl in pairs(state.highlights) do
@@ -1695,7 +2366,7 @@ makeToggle("Поддоны", state.espPallets, "visuals", function(on)
     end
 end)
 
-makeSectionLabel("▬ ЦВЕТА ▬", "visuals")
+makeSectionLabel("ЦВЕТА", "visuals")
 makeColorButton("Цвет выживших", state.survivorColor, "visuals", function(col) state.survivorColor = col end)
 makeColorButton("Цвет убийцы", state.killerColor, "visuals", function(col) state.killerColor = col end)
 makeColorButton("Цвет генераторов", state.generatorColor, "visuals", function(col)
@@ -1718,7 +2389,7 @@ makeColorButton("Цвет поддонов", state.palletColor, "visuals", funct
 end)
 
 -- ============== ВКЛАДКА "МИР" ==============
-makeSectionLabel("▬ ОСВЕЩЕНИЕ ▬", "world")
+makeSectionLabel("ОСВЕЩЕНИЕ", "world")
 makeToggle("Fullbright", state.fullbright, "world", function(on)
     state.fullbright = on; setFullbright(on)
 end)
@@ -1729,26 +2400,24 @@ makeToggle("Убрать тени", state.noShadows, "world", function(on)
     state.noShadows = on; setNoShadows(on)
 end)
 
-makeSectionLabel("▬ КАМЕРА ▬", "world")
+makeSectionLabel("КАМЕРА", "world")
 makeSlider("FOV", 60, 120, state.fovValue, "world", function(val)
     state.fovValue = val
     if Workspace.CurrentCamera then Workspace.CurrentCamera.FieldOfView = val end
 end)
 
-makeSectionLabel("▬ HUD ▬", "world")
+makeSectionLabel("HUD", "world")
 makeToggle("Оповещение об убийце", state.killerAlert, "world", function(on)
     state.killerAlert = on
     if not on then alertGui.Visible = false end
 end)
 
 -- ============== ВКЛАДКА "КОСМЕТИКА" ==============
-makeSectionLabel("▬ ЭФФЕКТЫ ▬", "cosmetics")
+makeSectionLabel("ЭФФЕКТЫ", "cosmetics")
 
-local trailToggle = makeToggle("Трейл (шлейф)", state.effectTrail, "cosmetics", function(on)
+makeToggle("Трейл (шлейф)", state.effectTrail, "cosmetics", function(on)
     state.effectTrail = on
-    if on then
-        applyTrailEffect()
-    else
+    if on then applyTrailEffect() else
         for _, e in ipairs(state.currentEffects) do
             if e.Name == "brieliVis_Trail" or e.Name:find("brieliVis_TrailAtt") then
                 pcall(function() e:Destroy() end)
@@ -1757,24 +2426,18 @@ local trailToggle = makeToggle("Трейл (шлейф)", state.effectTrail, "co
     end
 end)
 
-local particlesToggle = makeToggle("Частицы (искры)", state.effectParticles, "cosmetics", function(on)
+makeToggle("Частицы (искры)", state.effectParticles, "cosmetics", function(on)
     state.effectParticles = on
-    if on then
-        applyParticlesEffect()
-    else
+    if on then applyParticlesEffect() else
         for _, e in ipairs(state.currentEffects) do
-            if e.Name == "brieliVis_Particles" then
-                pcall(function() e:Destroy() end)
-            end
+            if e.Name == "brieliVis_Particles" then pcall(function() e:Destroy() end) end
         end
     end
 end)
 
-local auraToggle = makeToggle("Аура (луч)", state.effectAura, "cosmetics", function(on)
+makeToggle("Аура (луч)", state.effectAura, "cosmetics", function(on)
     state.effectAura = on
-    if on then
-        applyAuraEffect()
-    else
+    if on then applyAuraEffect() else
         for _, e in ipairs(state.currentEffects) do
             if e.Name == "brieliVis_Aura" or e.Name == "brieliVis_AuraAtt" then
                 pcall(function() e:Destroy() end)
@@ -1783,19 +2446,48 @@ local auraToggle = makeToggle("Аура (луч)", state.effectAura, "cosmetics"
     end
 end)
 
-makeActionButton("🗑 Убрать все эффекты", "cosmetics",
-    Color3.fromRGB(140, 55, 55), function()
-        clearEffects()
-    end)
+makeActionButton("Убрать все эффекты", "cosmetics", nil, function()
+    clearEffects()
+end)
 
 -- ============== ВКЛАДКА "РАЗНОЕ" ==============
-makeSectionLabel("▬ ДВИЖЕНИЕ ▬", "misc")
+makeSectionLabel("ДВИЖЕНИЕ", "misc")
 makeToggle("Noclip (сквозь стены)", state.noclip, "misc", function(on)
     state.noclip = on
     if on then enableNoclip() else disableNoclip() end
 end)
 
-makeSectionLabel("▬ КРУТИЛКА ▬", "misc")
+-- AVOID KILLER
+makeSectionLabel("ИЗБЕГАНИЕ МАНЬЯКА", "misc")
+
+makeMasterToggle("Избегание маньяка", state.avoidKiller, "misc", function(on)
+    state.avoidKiller = on
+end)
+
+makeSlider("Дистанция избегания (studs)", 1, 100, state.avoidKillerDistance, "misc", function(val)
+    state.avoidKillerDistance = val
+end)
+
+-- AIMBOT
+makeSectionLabel("АИМБОТ", "misc")
+
+makeMasterToggle("Aimbot (вкл/выкл)", state.aimbotEnabled, "misc", function(on)
+    state.aimbotEnabled = on
+    if not on then fovCircle.Visible = false end
+end)
+
+makeToggle("Показывать FOV-круг", state.aimbotShowFov, "misc", function(on)
+    state.aimbotShowFov = on
+    if not on then fovCircle.Visible = false end
+end)
+
+makeSlider("Размер FOV", 20, 500, state.aimbotFovSize, "misc", function(val)
+    state.aimbotFovSize = val
+    fovCircle.Size = UDim2.new(0, val * 2, 0, val * 2)
+end)
+
+-- КРУТИЛКА
+makeSectionLabel("КРУТИЛКА", "misc")
 
 makeToggle("Включить вращение", state.spinEnabled, "misc", function(on)
     state.spinEnabled = on
@@ -1804,62 +2496,63 @@ end)
 
 local spinDirFrame = Instance.new("Frame")
 spinDirFrame.Size = UDim2.new(1, 0, 0, 50)
-spinDirFrame.BackgroundColor3 = getTheme().row
+spinDirFrame.BackgroundColor3 = C.row
 spinDirFrame.BorderSizePixel = 0
 spinDirFrame.Parent = contentScroll
 spinDirFrame:SetAttribute("Tab", "misc")
-spinDirFrame:SetAttribute("TR", "row")
-round(spinDirFrame, 6)
+round(spinDirFrame, 5)
 
 local spinDirLabel = Instance.new("TextLabel")
 spinDirLabel.Size = UDim2.new(1, -14, 0, 20)
 spinDirLabel.Position = UDim2.new(0, 14, 0, 4)
 spinDirLabel.BackgroundTransparency = 1
 spinDirLabel.Text = "Направление"
-spinDirLabel.TextColor3 = Color3.fromRGB(230, 230, 245)
+spinDirLabel.TextColor3 = C.text
 spinDirLabel.TextXAlignment = Enum.TextXAlignment.Left
 spinDirLabel.Font = Enum.Font.GothamMedium
-spinDirLabel.TextSize = 13
+spinDirLabel.TextSize = 12
 spinDirLabel.Parent = spinDirFrame
 
 local dirRightBtn = Instance.new("TextButton")
 dirRightBtn.Size = UDim2.new(0, 100, 0, 22)
 dirRightBtn.Position = UDim2.new(0, 14, 0, 26)
-dirRightBtn.BackgroundColor3 = getTheme().accent
+dirRightBtn.BackgroundColor3 = C.tabActive
 dirRightBtn.BorderSizePixel = 0
-dirRightBtn.Text = "➡ Вправо"
-dirRightBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+dirRightBtn.Text = "Вправо"
+dirRightBtn.TextColor3 = C.accent
 dirRightBtn.Font = Enum.Font.GothamMedium
 dirRightBtn.TextSize = 11
 dirRightBtn.Parent = spinDirFrame
-round(dirRightBtn, 6)
+round(dirRightBtn, 4)
+attachHoverScale(dirRightBtn, 1.05)
 
 local dirLeftBtn = Instance.new("TextButton")
 dirLeftBtn.Size = UDim2.new(0, 100, 0, 22)
 dirLeftBtn.Position = UDim2.new(0, 120, 0, 26)
-dirLeftBtn.BackgroundColor3 = getTheme().rowHov
+dirLeftBtn.BackgroundColor3 = C.rowHover
 dirLeftBtn.BorderSizePixel = 0
-dirLeftBtn.Text = "⬅ Влево"
-dirLeftBtn.TextColor3 = Color3.fromRGB(200, 200, 220)
+dirLeftBtn.Text = "Влево"
+dirLeftBtn.TextColor3 = C.textDim
 dirLeftBtn.Font = Enum.Font.GothamMedium
 dirLeftBtn.TextSize = 11
 dirLeftBtn.Parent = spinDirFrame
-round(dirLeftBtn, 6)
+round(dirLeftBtn, 4)
+attachHoverScale(dirLeftBtn, 1.05)
 
 dirRightBtn.MouseButton1Click:Connect(function()
     state.spinDirection = "right"
-    dirRightBtn.BackgroundColor3 = getTheme().accent
-    dirRightBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    dirLeftBtn.BackgroundColor3 = getTheme().rowHov
-    dirLeftBtn.TextColor3 = Color3.fromRGB(200, 200, 220)
+    dirRightBtn.BackgroundColor3 = C.tabActive
+    dirRightBtn.TextColor3 = C.accent
+    dirLeftBtn.BackgroundColor3 = C.rowHover
+    dirLeftBtn.TextColor3 = C.textDim
 end)
 
 dirLeftBtn.MouseButton1Click:Connect(function()
     state.spinDirection = "left"
-    dirLeftBtn.BackgroundColor3 = getTheme().accent
-    dirLeftBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-    dirRightBtn.BackgroundColor3 = getTheme().rowHov
-    dirRightBtn.TextColor3 = Color3.fromRGB(200, 200, 220)
+    dirLeftBtn.BackgroundColor3 = C.tabActive
+    dirLeftBtn.TextColor3 = C.accent
+    dirRightBtn.BackgroundColor3 = C.rowHover
+    dirRightBtn.TextColor3 = C.textDim
 end)
 
 makeSlider("Скорость вращения", 40, 240, state.spinSpeed, "misc", function(val)
@@ -1867,107 +2560,25 @@ makeSlider("Скорость вращения", 40, 240, state.spinSpeed, "misc"
 end)
 
 -- ============== ВКЛАДКА "МЕНЮ" ==============
-local infoLabel = Instance.new("TextLabel")
-infoLabel.Size = UDim2.new(1, 0, 0, 60)
-infoLabel.BackgroundColor3 = Color3.fromRGB(30, 30, 42)
-infoLabel.BorderSizePixel = 0
-infoLabel.Text = "brieli vis\nViolence District Edition\n\n" ..
-    "Клавиша меню: " .. state.menuKey.Name
-infoLabel.TextColor3 = Color3.fromRGB(150, 150, 170)
-infoLabel.Font = Enum.Font.Gotham
-infoLabel.TextSize = 13
-infoLabel.Parent = contentScroll
-infoLabel:SetAttribute("Tab", "menu")
-round(infoLabel, 6)
-
-makeSectionLabel("▬ ТЕМА МЕНЮ ▬", "menu")
-
-local function makeThemeButton(text, themeKey)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 34)
-    btn.BackgroundColor3 = getTheme().row
-    btn.BorderSizePixel = 0
-    btn.AutoButtonColor = false
-    btn.Text = ""
-    btn.Parent = contentScroll
-    btn:SetAttribute("Tab", "menu")
-    btn:SetAttribute("TR", "row")
-    round(btn, 6)
-
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -70, 1, 0)
-    label.Position = UDim2.new(0, 14, 0, 0)
-    label.BackgroundTransparency = 1
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(230, 230, 245)
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Font = Enum.Font.GothamMedium
-    label.TextSize = 13
-    label.Parent = btn
-
-    local swatch = Instance.new("Frame")
-    swatch.Size = UDim2.new(0, 26, 0, 26)
-    swatch.Position = UDim2.new(1, -40, 0.5, -13)
-    swatch.BackgroundColor3 = THEMES[themeKey].accent
-    swatch.BorderSizePixel = 0
-    swatch.Parent = btn
-    round(swatch, 4)
-
-    btn.MouseEnter:Connect(function() btn.BackgroundColor3 = getTheme().rowHov end)
-    btn.MouseLeave:Connect(function() btn.BackgroundColor3 = getTheme().row end)
-    btn.MouseButton1Click:Connect(function()
-        state.menuTheme = themeKey
-        applyTheme()
-    end)
-end
-
-local function applyTheme()
-    local th = getTheme()
-    for _, d in ipairs(screenGui:GetDescendants()) do
-        local role = d:GetAttribute("TR")
-        if role == "bg" then d.BackgroundColor3 = th.bg
-        elseif role == "titleBg" then d.BackgroundColor3 = th.titleBg
-        elseif role == "stroke" and d:IsA("UIStroke") then d.Color = th.stroke
-        elseif role == "accentBg" then d.BackgroundColor3 = th.accent
-        elseif role == "accentText" then d.TextColor3 = th.accent
-        elseif role == "row" then d.BackgroundColor3 = th.row
-        end
-    end
-    for id, btn in pairs(tabButtons) do
-        local isActive = (id == state.currentTab)
-        btn.BackgroundColor3 = isActive and th.tabAct or th.tabBg
-    end
-    contentScroll.ScrollBarImageColor3 = th.stroke
-    for _, d in ipairs(screenGui:GetDescendants()) do
-        if d.Name == "Fill" and d:IsA("Frame") then d.BackgroundColor3 = th.accent end
-    end
-end
-
-makeThemeButton("Тёмно-синий", "blue")
-makeThemeButton("Тёмно-фиолетовый", "purple")
-makeThemeButton("Тёмно-зелёный", "green")
-makeThemeButton("Тёмно-красный", "red")
-makeThemeButton("Чёрный", "black")
-
-makeSectionLabel("▬ КЛАВИША МЕНЮ ▬", "menu")
+makeSectionLabel("КЛАВИША МЕНЮ", "menu")
 
 local keybindBtn = Instance.new("TextButton")
 keybindBtn.Size = UDim2.new(1, 0, 0, 34)
-keybindBtn.BackgroundColor3 = getTheme().row
+keybindBtn.BackgroundColor3 = C.row
 keybindBtn.BorderSizePixel = 0
 keybindBtn.AutoButtonColor = false
 keybindBtn.Text = "  Изменить клавишу  (" .. state.menuKey.Name .. ")"
-keybindBtn.TextColor3 = Color3.fromRGB(230, 230, 245)
+keybindBtn.TextColor3 = C.text
 keybindBtn.TextXAlignment = Enum.TextXAlignment.Left
 keybindBtn.Font = Enum.Font.GothamMedium
-keybindBtn.TextSize = 13
+keybindBtn.TextSize = 12
 keybindBtn.Parent = contentScroll
 keybindBtn:SetAttribute("Tab", "menu")
-keybindBtn:SetAttribute("TR", "row")
-round(keybindBtn, 6)
+round(keybindBtn, 5)
+attachHoverScale(keybindBtn, 1.02)
 
-keybindBtn.MouseEnter:Connect(function() keybindBtn.BackgroundColor3 = getTheme().rowHov end)
-keybindBtn.MouseLeave:Connect(function() keybindBtn.BackgroundColor3 = getTheme().row end)
+keybindBtn.MouseEnter:Connect(function() keybindBtn.BackgroundColor3 = C.rowHover end)
+keybindBtn.MouseLeave:Connect(function() keybindBtn.BackgroundColor3 = C.row end)
 
 local listeningForKey = false
 keybindBtn.MouseButton1Click:Connect(function()
@@ -1980,33 +2591,84 @@ keybindBtn.MouseButton1Click:Connect(function()
         if input.UserInputType == Enum.UserInputType.Keyboard then
             state.menuKey = input.KeyCode
             keybindBtn.Text = "  Изменить клавишу  (" .. input.KeyCode.Name .. ")"
-            infoLabel.Text = "brieli vis\nViolence District Edition\n\n" ..
-                "Клавиша меню: " .. input.KeyCode.Name
             listeningForKey = false
             conn:Disconnect()
         end
     end)
 end)
 
-makeSectionLabel("▬ ОБСЛУЖИВАНИЕ ▬", "menu")
+-- КАСТОМИЗАЦИЯ
+makeSectionLabel("ЦВЕТ АКЦЕНТА", "menu")
+
+local accentPresets = {
+    { name = "Cyan",   color = Color3.fromRGB(0, 200, 255) },
+    { name = "Purple", color = Color3.fromRGB(170, 110, 255) },
+    { name = "Red",    color = Color3.fromRGB(255, 80, 80) },
+    { name = "Green",  color = Color3.fromRGB(80, 230, 130) },
+    { name = "Pink",   color = Color3.fromRGB(255, 110, 200) },
+    { name = "Orange", color = Color3.fromRGB(255, 165, 30) },
+}
+
+for _, preset in ipairs(accentPresets) do
+    local btn = makeActionButton(preset.name, "menu", nil, function()
+        state.configAccent = preset.color
+        applyAccentColor(preset.color)
+    end)
+    local dot = Instance.new("Frame")
+    dot.Size = UDim2.new(0, 14, 0, 14)
+    dot.Position = UDim2.new(1, -26, 0.5, -7)
+    dot.BackgroundColor3 = preset.color
+    dot.BorderSizePixel = 0
+    dot.Parent = btn
+    round(dot, 7)
+end
+
+makeSectionLabel("ФОНОВОЕ ИЗОБРАЖЕНИЕ", "menu")
+
+local bgBoxFrame, bgBox = makeTextBox("Вставь URL картинки или rbxassetid://...", "menu", function(text)
+    state.configBgImage = text
+    applyBgImage()
+end)
+
+makeToggle("Показывать фон", state.configBgImageEnabled, "menu", function(on)
+    state.configBgImageEnabled = on
+    applyBgImage()
+end)
+
+makeSlider("Прозрачность фона", 0, 1, state.configBgImageTransparency, "menu", function(val)
+    state.configBgImageTransparency = val
+    bgImage.ImageTransparency = val
+end, 0.05)
+
+makeActionButton("Убрать фон", "menu", Color3.fromRGB(140, 35, 35), function()
+    state.configBgImage = ""
+    state.configBgImageEnabled = false
+    bgImage.Image = ""
+    bgImage.Visible = false
+    content.BackgroundTransparency = 0
+    if bgBox then bgBox.Text = "" end
+end)
+
+-- ОБСЛУЖИВАНИЕ
+makeSectionLabel("ОБСЛУЖИВАНИЕ", "menu")
 
 local rescanBtn = Instance.new("TextButton")
 rescanBtn.Size = UDim2.new(1, 0, 0, 34)
-rescanBtn.BackgroundColor3 = getTheme().row
+rescanBtn.BackgroundColor3 = C.row
 rescanBtn.BorderSizePixel = 0
 rescanBtn.AutoButtonColor = false
-rescanBtn.Text = "  🔄 Пересканировать мир"
-rescanBtn.TextColor3 = Color3.fromRGB(230, 230, 245)
+rescanBtn.Text = "  Пересканировать мир"
+rescanBtn.TextColor3 = C.text
 rescanBtn.TextXAlignment = Enum.TextXAlignment.Left
 rescanBtn.Font = Enum.Font.GothamMedium
-rescanBtn.TextSize = 13
+rescanBtn.TextSize = 12
 rescanBtn.Parent = contentScroll
 rescanBtn:SetAttribute("Tab", "menu")
-rescanBtn:SetAttribute("TR", "row")
-round(rescanBtn, 6)
+round(rescanBtn, 5)
+attachHoverScale(rescanBtn, 1.02)
 
-rescanBtn.MouseEnter:Connect(function() rescanBtn.BackgroundColor3 = getTheme().rowHov end)
-rescanBtn.MouseLeave:Connect(function() rescanBtn.BackgroundColor3 = getTheme().row end)
+rescanBtn.MouseEnter:Connect(function() rescanBtn.BackgroundColor3 = C.rowHover end)
+rescanBtn.MouseLeave:Connect(function() rescanBtn.BackgroundColor3 = C.row end)
 rescanBtn.MouseButton1Click:Connect(function()
     for inst, hl in pairs(state.highlights) do
         if hl.Name == "brieliVis_WorldESP" then
@@ -2014,41 +2676,155 @@ rescanBtn.MouseButton1Click:Connect(function()
         end
     end
     initialScan()
-    rescanBtn.Text = "  ✅ Готово!"
+    rescanBtn.Text = "  Готово!"
     task.wait(1.5)
-    rescanBtn.Text = "  🔄 Пересканировать мир"
+    rescanBtn.Text = "  Пересканировать мир"
+end)
+
+makeActionButton("Сохранить конфиг", "menu", nil, function(btn)
+    saveConfig()
+    btn.Text = "  Сохранено!"
+    task.wait(1)
+    btn.Text = "  Сохранить конфиг"
+end)
+
+makeActionButton("Сбросить конфиг", "menu", Color3.fromRGB(140, 35, 35), function(btn)
+    fsDelete(CONFIG_FILE)
+    btn.Text = "  Удалён. Перезапусти скрипт"
+    task.wait(2)
+    btn.Text = "  Сбросить конфиг"
 end)
 
 local unloadBtn = Instance.new("TextButton")
-unloadBtn.Size = UDim2.new(0, 130, 0, 28)
+unloadBtn.Size = UDim2.new(0, 130, 0, 30)
 unloadBtn.Position = UDim2.new(1, -14, 1, -14)
 unloadBtn.AnchorPoint = Vector2.new(1, 1)
-unloadBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+unloadBtn.BackgroundColor3 = Color3.fromRGB(140, 35, 35)
 unloadBtn.BorderSizePixel = 0
 unloadBtn.AutoButtonColor = false
 unloadBtn.Text = "Выгрузить"
-unloadBtn.TextColor3 = Color3.fromRGB(255, 230, 230)
+unloadBtn.TextColor3 = Color3.fromRGB(255, 220, 220)
 unloadBtn.Font = Enum.Font.GothamMedium
-unloadBtn.TextSize = 13
+unloadBtn.TextSize = 12
 unloadBtn.Parent = main
-round(unloadBtn, 6)
+round(unloadBtn, 5)
 
-unloadBtn.MouseEnter:Connect(function() unloadBtn.BackgroundColor3 = Color3.fromRGB(210, 70, 70) end)
-unloadBtn.MouseLeave:Connect(function() unloadBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50) end)
+local unloadScale = Instance.new("UIScale")
+unloadScale.Scale = 1
+unloadScale.Parent = unloadBtn
+unloadBtn.MouseEnter:Connect(function()
+    TweenService:Create(unloadBtn, TweenInfo.new(0.12), {BackgroundColor3 = Color3.fromRGB(175, 50, 50)}):Play()
+    TweenService:Create(unloadScale, TweenInfo.new(0.12), {Scale = 1.04}):Play()
+end)
+unloadBtn.MouseLeave:Connect(function()
+    TweenService:Create(unloadBtn, TweenInfo.new(0.12), {BackgroundColor3 = Color3.fromRGB(140, 35, 35)}):Play()
+    TweenService:Create(unloadScale, TweenInfo.new(0.12), {Scale = 1}):Play()
+end)
 
 -- ============== ОПОВЕЩЕНИЕ ==============
 local alertGui = Instance.new("TextLabel")
 alertGui.Size = UDim2.new(0, 300, 0, 42)
 alertGui.Position = UDim2.new(0.5, -150, 0, 70)
-alertGui.BackgroundColor3 = Color3.fromRGB(200, 30, 30)
+alertGui.BackgroundColor3 = Color3.fromRGB(180, 25, 25)
 alertGui.BackgroundTransparency = 0.1
-alertGui.Text = "⚠  РЯДОМ УБИЙЦА  ⚠"
+alertGui.Text = "РЯДОМ УБИЙЦА"
 alertGui.TextColor3 = Color3.fromRGB(255, 255, 255)
 alertGui.Font = Enum.Font.GothamBold
-alertGui.TextSize = 18
+alertGui.TextSize = 16
 alertGui.Visible = false
 alertGui.Parent = screenGui
-round(alertGui, 8)
+round(alertGui, 6)
+
+local alertStroke = Instance.new("UIStroke")
+alertStroke.Color = Color3.fromRGB(255, 70, 70)
+alertStroke.Thickness = 1.5
+alertStroke.Parent = alertGui
+
+-- ============== ПРИМЕНЕНИЕ КОНФИГА ==============
+local function applyLoadedConfig(cfg)
+    if not cfg then return end
+    state.loadingConfig = true
+
+    if cfg.espEnabled ~= nil then state.espEnabled = cfg.espEnabled end
+    if cfg.showName ~= nil then state.showName = cfg.showName end
+    if cfg.showDistance ~= nil then state.showDistance = cfg.showDistance end
+    if cfg.showHealthBar ~= nil then state.showHealthBar = cfg.showHealthBar end
+    if cfg.showKillerTag ~= nil then state.showKillerTag = cfg.showKillerTag end
+    if cfg.chams ~= nil then state.chams = cfg.chams end
+    if cfg.box2D ~= nil then state.box2D = cfg.box2D end
+    if cfg.skeleton ~= nil then state.skeleton = cfg.skeleton end
+    if cfg.espGenerators ~= nil then state.espGenerators = cfg.espGenerators end
+    if cfg.espHooks ~= nil then state.espHooks = cfg.espHooks end
+    if cfg.espPallets ~= nil then state.espPallets = cfg.espPallets end
+    if cfg.fullbright ~= nil then state.fullbright = cfg.fullbright end
+    if cfg.noFog ~= nil then state.noFog = cfg.noFog end
+    if cfg.noShadows ~= nil then state.noShadows = cfg.noShadows end
+    if cfg.fovValue ~= nil then state.fovValue = cfg.fovValue end
+    if cfg.killerAlert ~= nil then state.killerAlert = cfg.killerAlert end
+    if cfg.checkpointBinds ~= nil then state.checkpointBinds = cfg.checkpointBinds end
+    if cfg.spinSpeed ~= nil then state.spinSpeed = cfg.spinSpeed end
+    if cfg.spinDirection ~= nil then state.spinDirection = cfg.spinDirection end
+    if cfg.autoEscape ~= nil then state.autoEscape = cfg.autoEscape end
+
+    if cfg.aimbotEnabled ~= nil then state.aimbotEnabled = cfg.aimbotEnabled end
+    if cfg.aimbotShowFov ~= nil then state.aimbotShowFov = cfg.aimbotShowFov end
+    if cfg.aimbotFovSize ~= nil then state.aimbotFovSize = cfg.aimbotFovSize end
+
+    if cfg.avoidKiller ~= nil then state.avoidKiller = cfg.avoidKiller end
+    if cfg.avoidKillerDistance ~= nil then state.avoidKillerDistance = cfg.avoidKillerDistance end
+
+    if cfg.menuKeyName then
+        local ok, key = pcall(function() return Enum.KeyCode[cfg.menuKeyName] end)
+        if ok and key then state.menuKey = key end
+    end
+
+    local sc = colorFromTable(cfg.survivorColor); if sc then state.survivorColor = sc end
+    local kc = colorFromTable(cfg.killerColor); if kc then state.killerColor = kc end
+    local gc = colorFromTable(cfg.generatorColor); if gc then state.generatorColor = gc end
+    local hc = colorFromTable(cfg.hookColor); if hc then state.hookColor = hc end
+    local pc = colorFromTable(cfg.palletColor); if pc then state.palletColor = pc end
+
+    if cfg.configAccent then
+        local ac = colorFromTable(cfg.configAccent)
+        if ac then
+            state.configAccent = ac
+            applyAccentColor(ac)
+        end
+    end
+    if cfg.configBgImage then state.configBgImage = cfg.configBgImage end
+    if cfg.configBgImageEnabled ~= nil then state.configBgImageEnabled = cfg.configBgImageEnabled end
+    if cfg.configBgImageTransparency ~= nil then state.configBgImageTransparency = cfg.configBgImageTransparency end
+
+    if state.fovValue ~= 90 and Workspace.CurrentCamera then
+        Workspace.CurrentCamera.FieldOfView = state.fovValue
+    end
+    if state.fullbright then setFullbright(true) end
+    if state.noFog then setNoFog(true) end
+    if state.noShadows then setNoShadows(true) end
+    if state.autoEscape then startAutoEscape() end
+
+    fovCircle.Size = UDim2.new(0, state.aimbotFovSize * 2, 0, state.aimbotFovSize * 2)
+
+    applyBgImage()
+
+    -- Восстанавливаем бинды
+    if cfg.keybinds then
+        for label, keyName in pairs(cfg.keybinds) do
+            local data = keybindRegistry[label]
+            if data then
+                local ok, key = pcall(function() return Enum.KeyCode[keyName] end)
+                if ok and key then
+                    data.key = key
+                    if data.indicator then
+                        data.indicator.Text = "[" .. keyName .. "]"
+                    end
+                end
+            end
+        end
+    end
+
+    state.loadingConfig = false
+end
 
 -- ============== F1 / F2 ==============
 ContextActionSvc:BindActionAtPriority("brieliVis_Checkpoint_Save",
@@ -2082,9 +2858,13 @@ local function unload()
     if state.unloaded then return end
     state.unloaded = true
 
+    pcall(saveConfig)
+
     for _, c in ipairs(state.connections) do pcall(function() c:Disconnect() end) end
     state.connections = {}
     if renderConn then renderConn:Disconnect() end
+    if state.avoidConn then state.avoidConn:Disconnect() end
+    pcall(function() RunService:UnbindFromRenderStep("brieliVis_Aimbot") end)
 
     pcall(stopSpin)
     pcall(stopAutoEscape)
@@ -2105,7 +2885,7 @@ local function unload()
     for _, box in pairs(state.boxes2D) do pcall(function() box:Destroy() end) end
     state.boxes2D = {}
     for _, skel in pairs(state.skeletons) do
-        for _, bone in ipairs(skel) do pcall(function() bone.line:Remove() end) end
+        for _, line in ipairs(skel) do pcall(function() line:Remove() end) end
     end
     state.skeletons = {}
 
@@ -2132,7 +2912,25 @@ bind(UserInputService.InputBegan:Connect(function(input, gp)
 end))
 
 -- ============== СТАРТ ==============
+local loadedCfg = loadConfigTable()
+if loadedCfg then
+    task.spawn(function()
+        task.wait(0.3)
+        applyLoadedConfig(loadedCfg)
+    end)
+end
+
 initialScan()
+switchTab("visuals")
+
+task.spawn(function()
+    while not state.unloaded do
+        task.wait(3)
+        if not state.unloaded and not state.loadingConfig then
+            pcall(saveConfig)
+        end
+    end
+end)
 
 task.spawn(function()
     while not state.unloaded do
@@ -2162,5 +2960,4 @@ task.spawn(function()
     end
 end)
 
-switchTab("visuals")
 print("[brieli vis] загружен. Правый Shift — меню.")
